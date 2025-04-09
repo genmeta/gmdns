@@ -1,9 +1,11 @@
-use err_derive::Error;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(display = "_0")]
-    Io(#[error(source)] std::io::Error),
-    #[error(display = "_0")]
-    Dns(#[error(source)] dns_parser::Error),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Dns(#[from] dns_parser::Error),
+    #[error("{0}")]
+    Timeout(#[from] tokio::time::Elapsed),
 }

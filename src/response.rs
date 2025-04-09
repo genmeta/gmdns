@@ -72,6 +72,42 @@ impl Response {
     pub fn is_empty(&self) -> bool {
         self.answers.is_empty() && self.nameservers.is_empty() && self.additional.is_empty()
     }
+
+    pub fn ip_addr(&self) -> Option<net::IpAddr> {
+        self.records().find_map(|record| match record.kind {
+            RecordKind::A(addr) => Some(addr.into()),
+            RecordKind::AAAA(addr) => Some(addr.into()),
+            _ => None,
+        })
+    }
+
+    pub fn hostname(&self) -> Option<&str> {
+        self.records().find_map(|record| match record.kind {
+            RecordKind::PTR(ref host) => Some(host.as_str()),
+            _ => None,
+        })
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.records().find_map(|record| match record.kind {
+            RecordKind::SRV { port, .. } => Some(port),
+            _ => None,
+        })
+    }
+
+    pub fn socket_address(&self) -> Option<net::SocketAddr> {
+        Some((self.ip_addr()?, self.port()?).into())
+    }
+
+    pub fn txt_records(&self) -> impl Iterator<Item = &str> {
+        self.records()
+            .filter_map(|record| match record.kind {
+                RecordKind::TXT(ref txt) => Some(txt),
+                _ => None,
+            })
+            .flat_map(|txt| txt.iter())
+            .map(|txt| txt.as_str())
+    }
 }
 
 impl Record {

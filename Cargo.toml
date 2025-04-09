@@ -2,7 +2,7 @@
 name = "mdns"
 version = "0.3.2"
 authors = ["Dylan McKay <me@dylanmckay.io>"]
-edition = "2018"
+edition = "2024"
 
 description = """
 A multicast DNS client library.
@@ -12,7 +12,7 @@ Supports discovery of any mDNS device on a LAN.
 
 license = "MIT"
 documentation = "https://docs.rs/mdns"
-repository = "https://github.com/dylanmckay/mdns"
+repository = "https://github.com/genmeta/gmdns"
 
 categories = ["network-programming"]
 keywords = ["mdns", "dns", "multicast", "chromecast", "discovery"]
@@ -20,7 +20,7 @@ keywords = ["mdns", "dns", "multicast", "chromecast", "discovery"]
 [dependencies]
 dns-parser = "0.8.0"
 net2 = "0.2"
-err-derive = "0.2.1"
+thiserror = "2"
 futures-core = "0.3.1"
 futures-util = "0.3.1"
 async-stream = "0.2.0"
