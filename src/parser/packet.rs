@@ -25,14 +25,30 @@ pub struct Packet<'a> {
 
 pub fn parse_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
     let (remain, header) = be_header(input)?;
-    let (remain, questions) =
-        nom::multi::count(be_question, header.questions_count() as usize).parse(remain)?;
-    let (remain, answers) =
-        nom::multi::count(be_record, header.answers_count() as usize).parse(remain)?;
-    let (remain, nameservers) =
-        nom::multi::count(be_record, header.nameservers_count() as usize).parse(remain)?;
-    let (remain, additional) =
-        nom::multi::count(be_record, header.additional_count() as usize).parse(remain)?;
+
+    let (remain, questions) = nom::multi::count(
+        |remain| be_question(remain, input),
+        header.questions_count as usize,
+    )
+    .parse(remain)?;
+
+    let (remain, answers) = nom::multi::count(
+        |remain| be_record(remain, input),
+        header.answers_count as usize,
+    )
+    .parse(remain)?;
+
+    let (remain, nameservers) = nom::multi::count(
+        |remain| be_record(remain, input),
+        header.nameservers_count as usize,
+    )
+    .parse(remain)?;
+
+    let (remain, additional) = nom::multi::count(
+        |remain| be_record(remain, input),
+        header.additional_count as usize,
+    )
+    .parse(remain)?;
     Ok((
         remain,
         Packet {
@@ -63,6 +79,112 @@ impl<T: BufMut> WritePacket for T {
         }
         for additional in &packet.additional {
             self.put_record(additional);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+    use crate::parser::{
+        question::{QueryClass, QueryType},
+        record::{Class, RData, Type},
+    };
+
+    #[test]
+    fn parse_example_query() {
+        let query = b"\x06%\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\
+                      \x07example\x03com\x00\x00\x01\x00\x01";
+        let (_, packet) = parse_packet(query).unwrap();
+        assert_eq!(packet.header.id, 1573);
+        assert_eq!(packet.header.questions_count, 1);
+        assert_eq!(packet.questions[0].qtype, QueryType::A);
+        assert_eq!(packet.questions[0].qclass, QueryClass::IN);
+        assert_eq!(packet.questions[0].name.to_string(), "example.com");
+        assert_eq!(packet.header.answers_count, 0);
+    }
+
+    #[test]
+    fn parse_example_response() {
+        let response = b"\x06%\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\
+                         \x07example\x03com\x00\x00\x01\x00\x01\
+                         \xc0\x0c\x00\x01\x00\x01\x00\x00\x04\xf8\
+                         \x00\x04]\xb8\xd8\"";
+        let (_, packet) = parse_packet(response).unwrap();
+        assert_eq!(packet.header.id, 1573);
+        assert_eq!(packet.header.questions_count, 1);
+        assert_eq!(packet.questions[0].qtype, QueryType::A);
+        assert_eq!(packet.questions[0].qclass, QueryClass::IN);
+        assert_eq!(packet.questions[0].name.to_string(), "example.com");
+        assert_eq!(packet.header.answers_count, 1);
+        assert_eq!(packet.answers[0].name.to_string(), "example.com");
+        assert_eq!(packet.answers[0].typ, Type::A);
+        assert_eq!(packet.answers[0].cls, Class::IN);
+        assert_eq!(packet.answers[0].ttl, 1272);
+        match &packet.answers[0].data {
+            RData::A(addr) => assert_eq!(*addr, Ipv4Addr::new(93, 184, 216, 34)),
+            _ => panic!("unexpected rdata"),
+        }
+    }
+
+    #[test]
+    fn parse_response_with_multicast_unique() {
+        let response = b"\x06%\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\
+                         \x07example\x03com\x00\x00\x01\x00\x01\
+                         \xc0\x0c\x00\x01\x80\x01\x00\x00\x04\xf8\
+                         \x00\x04]\xb8\xd8\"";
+        let (_, packet) = parse_packet(response).unwrap();
+
+        assert_eq!(packet.answers.len(), 1);
+        assert!(packet.answers[0].multicast_unique);
+        assert_eq!(packet.answers[0].cls, Class::IN);
+    }
+
+    #[test]
+    fn parse_additional_record_response() {
+        let response = b"\x4a\xf0\x81\x80\x00\x01\x00\x01\x00\x01\x00\x01\
+                         \x03www\x05skype\x03com\x00\x00\x01\x00\x01\
+                         \xc0\x0c\x00\x05\x00\x01\x00\x00\x0e\x10\
+                         \x00\x1c\x07\x6c\x69\x76\x65\x63\x6d\x73\x0e\x74\
+                         \x72\x61\x66\x66\x69\x63\x6d\x61\x6e\x61\x67\x65\
+                         \x72\x03\x6e\x65\x74\x00\
+                         \xc0\x42\x00\x02\x00\x01\x00\x01\xd5\xd3\x00\x11\
+                         \x01\x67\x0c\x67\x74\x6c\x64\x2d\x73\x65\x72\x76\x65\x72\x73\
+                         \xc0\x42\
+                         \x01\x61\xc0\x55\x00\x01\x00\x01\x00\x00\xa3\x1c\
+                         \x00\x04\xc0\x05\x06\x1e";
+        let (_, packet) = parse_packet(response).unwrap();
+
+        assert_eq!(packet.header.id, 19184);
+        assert_eq!(packet.header.questions_count, 1);
+        assert_eq!(packet.questions[0].qtype, QueryType::A);
+        assert_eq!(packet.questions[0].qclass, QueryClass::IN);
+        assert_eq!(&packet.questions[0].name.to_string()[..], "www.skype.com");
+        assert_eq!(packet.answers.len(), 1);
+        assert_eq!(&packet.answers[0].name.to_string()[..], "www.skype.com");
+        assert_eq!(packet.answers[0].cls, Class::IN);
+        assert_eq!(packet.answers[0].ttl, 3600);
+
+        match &packet.answers[0].data {
+            RData::Cname(cname) => {
+                assert_eq!(cname, "livecms.trafficmanager.net");
+            }
+            ref x => panic!("Wrong rdata {:?}", x),
+        }
+        assert_eq!(packet.additional.len(), 1);
+        assert_eq!(
+            &packet.additional[0].name.to_string()[..],
+            "a.gtld-servers.net"
+        );
+        assert_eq!(packet.additional[0].cls, Class::IN);
+        assert_eq!(packet.additional[0].ttl, 41756);
+        match packet.additional[0].data {
+            RData::A(addr) => {
+                assert_eq!(addr, Ipv4Addr::new(192, 5, 6, 30));
+            }
+            ref x => panic!("Wrong rdata {:?}", x),
         }
     }
 }

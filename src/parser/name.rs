@@ -1,54 +1,85 @@
+
 use bytes::BufMut;
 use nom::{
-    Err, IResult,
+    IResult,
     bytes::streaming::take,
-    error::{Error, ErrorKind},
     number::streaming::be_u8,
 };
 
 pub type Name = String;
 
-/// https://datatracker.ietf.org/doc/html/rfc1035#section-3.1
-/// TODO: 支持压缩域名
-pub fn be_name(input: &[u8]) -> IResult<&[u8], Name> {
+pub fn be_name<'a>(input: &'a [u8], origin: &'a [u8]) -> IResult<&'a [u8], Name> {
+    be_name_inner(input, origin, &mut vec![])
+}
+
+fn be_name_inner<'a>(
+    input: &'a [u8],
+    origin: &'a [u8],
+    visited: &mut Vec<usize>,
+) -> IResult<&'a [u8], Name> {
+    let mut name = String::new();
     let mut remain = input;
-    let mut ret = String::new();
     loop {
-        let (left, len) = be_u8(remain)?;
-        if len == 0 {
-            let name = if ret.is_empty() { ".".into() } else { ret };
+        let (left, (label, end)) = be_label(remain, origin, visited)?;
+        if end {
+            if !label.is_empty() {
+                if !name.is_empty() {
+                    name.push('.');
+                }
+                name.push_str(&label);
+            }
+            if name.is_empty() {
+                name.push('.');
+            }
             return Ok((left, name));
         }
-        // 检查是否为压缩指针（高两位为11）
-        if len & 0xC0 == 0xC0 {
-            return Err(Err::Error(Error::new(input, ErrorKind::Verify)));
+        if !name.is_empty() {
+            name.push('.');
         }
-        // 检查标签长度是否合法（1-63字节）
-        if len > 63 {
-            return Err(Err::Error(Error::new(input, ErrorKind::Verify)));
-        }
-        let (left, name_bytes) = take(len)(left)?;
-
-        // 验证标签内容并转换为小写
-        let mut label = String::with_capacity(len as usize);
-        for &c in name_bytes {
-            if !(32..=126).contains(&c) {
-                // 允许 ASCII 32（空格）到 126（~）
-                return Err(Err::Error(Error::new(input, ErrorKind::Verify)));
-            }
-            label.push(c as char);
-        }
-        // 检查首尾不能为连字符
-        if label.starts_with('-') || label.ends_with('-') {
-            return Err(Err::Error(Error::new(input, ErrorKind::Verify)));
-        }
-        // 拼接域名部分
-        if !ret.is_empty() {
-            ret.push('.');
-        }
-        ret.push_str(&label);
+        name.push_str(&label);
         remain = left;
     }
+}
+
+fn be_label<'a>(
+    input: &'a [u8],
+    origin: &'a [u8],
+    visited: &mut Vec<usize>,
+) -> IResult<&'a [u8], (String, bool)> {
+    let (remain, len) = be_u8(input)?;
+    if len == 0 {
+        return Ok((remain, (String::new(), true)));
+    }
+    if (len & 0xC0) == 0xC0 {
+        let (remain, offset_byte) = be_u8(remain)?;
+        let offset = ((len & 0x3F) as u16) << 8 | offset_byte as u16;
+        let offset = offset as usize;
+        if offset >= origin.len() {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        if visited.contains(&offset) {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        visited.push(offset);
+        let (_, name) = be_name_inner(&origin[offset..], origin, visited)?;
+        visited.pop();
+        return Ok((remain, (name, true)));
+    }
+    if len > 63 {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+    let (remain, label_bytes) = take(len)(remain)?;
+    let label = String::from_utf8_lossy(label_bytes).into_owned();
+    Ok((remain, (label, false)))
 }
 
 pub trait WriteName {
@@ -96,9 +127,18 @@ mod test {
     #[test]
     fn parse_example_name() {
         let name = b"\x07example\x03com\x00";
-        let (remain, parsed_name) = be_name(name).unwrap();
+        let (remain, parsed_name) = be_name(name, name).unwrap();
         assert_eq!(remain.len(), 0);
         assert_eq!(parsed_name, "example.com");
+    }
+
+    #[test]
+    fn parse_badpointer_same_offset() {
+        // A buffer where an offset points to itself,
+        // which is a bad compression pointer.
+        let same_offset = [192, 2, 192, 2];
+        let ret = be_name(&same_offset, &same_offset);
+        assert!(ret.is_err())
     }
 
     #[test]
@@ -110,14 +150,33 @@ mod test {
     }
 
     #[test]
-    fn test_write_name_root() {
+    fn write_name_root() {
         let mut buf = BytesMut::new();
         buf.put_name(&".".into());
         assert_eq!(buf.as_ref(), b"\x00");
     }
 
     #[test]
-    fn test_write_name_trailing_dot() {
+    fn nested_names() {
+        let buf = b"\x02xx\x00\x02yy\xc0\x00\x02zz\xc0\x04";
+
+        let (remaining, parsed) = be_name(buf, buf).unwrap();
+        assert_eq!(remaining.len(), 10);
+        assert_eq!(parsed, "xx");
+
+        let (_remaining, parsed) = be_name(&buf[4..], buf).unwrap();
+        assert_eq!(parsed, "yy.xx");
+
+        // offset only
+        let (_remaining, parsed) = be_name(&buf[7..], buf).unwrap();
+        assert_eq!(parsed, "xx");
+
+        let (_remaining, parsed) = be_name(&buf[9..], buf).unwrap();
+        assert_eq!(parsed, "zz.yy.xx");
+    }
+
+    #[test]
+    fn write_name_trailing_dot() {
         let mut buf = BytesMut::new();
         buf.put_name(&"example.com.".into());
         // 应等价于 "example.com"
@@ -126,7 +185,7 @@ mod test {
 
     #[test]
     #[should_panic(expected = "exceeds 63 bytes")]
-    fn test_write_invalid_label_length() {
+    fn write_invalid_label_length() {
         let long_label = "a".repeat(64);
         let mut buf = BytesMut::new();
         buf.put_name(&long_label.to_string());
@@ -134,19 +193,19 @@ mod test {
 
     #[test]
     #[should_panic(expected = "empty label in middle")]
-    fn test_write_empty_middle_label() {
+    fn write_empty_middle_label() {
         let mut buf = BytesMut::new();
         buf.put_name(&"a..b".into());
     }
 
     #[test]
-    fn test_mdns_name_with_special_chars() {
+    fn mdns_name_with_special_chars() {
         let raw_name = "HP Color LaserJet Pro M478f-9f [EC3C83]._http._tcp.local";
 
         let mut buf = BytesMut::new();
         buf.put_name(&raw_name.to_string());
 
-        let (remaining, parsed) = be_name(&buf).unwrap();
+        let (remaining, parsed) = be_name(&buf, &buf).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(parsed, raw_name);
     }

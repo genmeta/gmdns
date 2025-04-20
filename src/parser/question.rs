@@ -19,13 +19,13 @@ use crate::parser::name::WriteName;
 /// ``
 #[derive(Debug)]
 pub struct Question {
-    name: Name,
-    prefer_unicast: bool,
-    qtype: QueryType,
-    qclass: QueryClass,
+    pub(crate) name: Name,
+    pub(crate) prefer_unicast: bool,
+    pub(crate) qtype: QueryType,
+    pub(crate) qclass: QueryClass,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum QueryType {
     /// a host addresss
     A,
@@ -104,8 +104,8 @@ impl QueryClass {
     }
 }
 
-pub fn be_question(input: &[u8]) -> nom::IResult<&[u8], Question> {
-    let (remain, name) = be_name(input)?;
+pub fn be_question<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], Question> {
+    let (remain, name) = be_name(input, origin)?;
     let (remain, qtype) = be_u16(remain)?;
     let (remain, qclass) = be_u16(remain)?;
 

@@ -3,7 +3,8 @@ use bytes::BufMut;
 use nom::number::streaming::be_u16;
 
 /// See https://datatracker.ietf.org/doc/html/rfc1035#autoid-40
-/// 与标准 DNS 不同，flags 字段的 zero 3bits 后两 bits 用于 AD、CD                             
+/// 与标准 DNS 不同，flags 字段的 zero 3bits 后两 bits 用于 AD、CD
+/// /// See https://datatracker.ietf.org/doc/html/rfc6762#autoid-48
 /// ```text
 /// 0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -22,48 +23,30 @@ use nom::number::streaming::be_u16;
 /// ```
 #[derive(Debug)]
 pub struct Header {
-    id: u16,
-    flags: Flags,
-    questions_count: u16,
-    answers_count: u16,
-    nameservers_count: u16,
-    additional_count: u16,
-}
-
-impl Header {
-    pub fn questions_count(&self) -> u16 {
-        self.questions_count
-    }
-
-    pub fn answers_count(&self) -> u16 {
-        self.answers_count
-    }
-
-    pub fn nameservers_count(&self) -> u16 {
-        self.nameservers_count
-    }
-
-    pub fn additional_count(&self) -> u16 {
-        self.additional_count
-    }
+    pub(crate) id: u16,
+    pub(crate) flags: Flags,
+    pub(crate) questions_count: u16,
+    pub(crate) answers_count: u16,
+    pub(crate) nameservers_count: u16,
+    pub(crate) additional_count: u16,
 }
 
 /// See https://datatracker.ietf.org/doc/html/rfc6762#autoid-48
 #[bitfield(u16, order = Msb)]
 #[derive(PartialEq, Eq)]
-struct Flags {
-    query: bool,
+pub struct Flags {
+    pub(crate) query: bool,
     #[bits(4)]
-    opcode: Opcode,
-    authoritative: bool,
-    trun_cache: bool,
-    recursion_desired: bool,
-    recursion_available: bool,
-    zero: bool,
-    authenticated_data: bool,
-    checking_disabled: bool,
+    pub(crate) opcode: Opcode,
+    pub(crate) authoritative: bool,
+    pub(crate) trun_cache: bool,
+    pub(crate) recursion_desired: bool,
+    pub(crate) recursion_available: bool,
+    pub(crate) zero: bool,
+    pub(crate) authenticated_data: bool,
+    pub(crate) checking_disabled: bool,
     #[bits(4)]
-    response_code: ResponseCode,
+    pub(crate) response_code: ResponseCode,
 }
 
 /// The OPCODE value according to RFC 1035
