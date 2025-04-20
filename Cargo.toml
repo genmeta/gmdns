@@ -1,0 +1,9 @@
+[package]
+name = "gmdns"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nom = "8"
+bytes = "1"
+bitfield-struct = "0.10"
