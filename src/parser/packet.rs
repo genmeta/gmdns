@@ -2,28 +2,79 @@ use bytes::BufMut;
 use nom::Parser;
 
 use super::{
-    header::{Header, be_header},
-    question::{Question, be_question},
-    record::ResourceRecord,
+    header::{self, Header, Opcode, be_header},
+    question::{QueryClass, QueryType, Question, be_question},
+    record::{Class, RData, ResourceRecord},
 };
 use crate::parser::{
     header::WriteHeader,
     question::WriteQuestion,
-    record::{WriteRecord, be_record},
+    record::{Type, WriteRecord, be_record},
 };
 
 /// Parsed DNS packet
 #[derive(Debug)]
-#[allow(missing_docs)] // should be covered by spec
-pub struct Packet<'a> {
+pub struct Packet {
     pub header: Header,
     pub questions: Vec<Question>,
-    pub answers: Vec<ResourceRecord<'a>>,
-    pub nameservers: Vec<ResourceRecord<'a>>,
-    pub additional: Vec<ResourceRecord<'a>>,
+    pub answers: Vec<ResourceRecord>,
+    pub nameservers: Vec<ResourceRecord>,
+    pub additional: Vec<ResourceRecord>,
 }
 
-pub fn parse_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
+impl Packet {
+    pub fn new() -> Self {
+        let flag = header::Flags::new();
+        flag.with_query(false).set_opcode(Opcode::StandardQuery);
+        let head = header::Header {
+            id: 0,
+            flags: flag,
+            questions_count: 0,
+            answers_count: 0,
+            nameservers_count: 0,
+            additional_count: 0,
+        };
+        Packet {
+            header: head,
+            questions: vec![],
+            answers: vec![],
+            nameservers: vec![],
+            additional: vec![],
+        }
+    }
+
+    pub fn add_question(
+        &mut self,
+        qname: &str,
+        qtype: QueryType,
+        qclass: QueryClass,
+        prefer_unicast: bool,
+    ) {
+        let question = Question {
+            name: qname.to_string(),
+            prefer_unicast,
+            qtype,
+            qclass,
+        };
+        self.header.questions_count += 1;
+        self.questions.push(question);
+    }
+
+    pub fn add_response(&mut self, name: &str, rtype: Type, rclass: Class, ttl: u32, data: RData) {
+        let response = ResourceRecord {
+            name: name.to_string(),
+            typ: rtype,
+            multicast_unique: false,
+            cls: rclass,
+            ttl,
+            data,
+        };
+        self.header.answers_count += 1;
+        self.answers.push(response);
+    }
+}
+
+pub fn be_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
     let (remain, header) = be_header(input)?;
 
     let (remain, questions) = nom::multi::count(
@@ -97,7 +148,7 @@ mod test {
     fn parse_example_query() {
         let query = b"\x06%\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\
                       \x07example\x03com\x00\x00\x01\x00\x01";
-        let (_, packet) = parse_packet(query).unwrap();
+        let (_, packet) = be_packet(query).unwrap();
         assert_eq!(packet.header.id, 1573);
         assert_eq!(packet.header.questions_count, 1);
         assert_eq!(packet.questions[0].qtype, QueryType::A);
@@ -112,7 +163,7 @@ mod test {
                          \x07example\x03com\x00\x00\x01\x00\x01\
                          \xc0\x0c\x00\x01\x00\x01\x00\x00\x04\xf8\
                          \x00\x04]\xb8\xd8\"";
-        let (_, packet) = parse_packet(response).unwrap();
+        let (_, packet) = be_packet(response).unwrap();
         assert_eq!(packet.header.id, 1573);
         assert_eq!(packet.header.questions_count, 1);
         assert_eq!(packet.questions[0].qtype, QueryType::A);
@@ -135,7 +186,7 @@ mod test {
                          \x07example\x03com\x00\x00\x01\x00\x01\
                          \xc0\x0c\x00\x01\x80\x01\x00\x00\x04\xf8\
                          \x00\x04]\xb8\xd8\"";
-        let (_, packet) = parse_packet(response).unwrap();
+        let (_, packet) = be_packet(response).unwrap();
 
         assert_eq!(packet.answers.len(), 1);
         assert!(packet.answers[0].multicast_unique);
@@ -155,7 +206,7 @@ mod test {
                          \xc0\x42\
                          \x01\x61\xc0\x55\x00\x01\x00\x01\x00\x00\xa3\x1c\
                          \x00\x04\xc0\x05\x06\x1e";
-        let (_, packet) = parse_packet(response).unwrap();
+        let (_, packet) = be_packet(response).unwrap();
 
         assert_eq!(packet.header.id, 19184);
         assert_eq!(packet.header.questions_count, 1);
@@ -168,7 +219,7 @@ mod test {
         assert_eq!(packet.answers[0].ttl, 3600);
 
         match &packet.answers[0].data {
-            RData::Cname(cname) => {
+            RData::CName(cname) => {
                 assert_eq!(cname, "livecms.trafficmanager.net");
             }
             ref x => panic!("Wrong rdata {:?}", x),

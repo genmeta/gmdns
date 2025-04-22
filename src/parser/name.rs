@@ -1,10 +1,5 @@
-
 use bytes::BufMut;
-use nom::{
-    IResult,
-    bytes::streaming::take,
-    number::streaming::be_u8,
-};
+use nom::{IResult, bytes::streaming::take, number::streaming::be_u8};
 
 pub type Name = String;
 

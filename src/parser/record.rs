@@ -7,12 +7,14 @@ use nom::{
     combinator::map,
     number::streaming::{be_u16, be_u32, be_u128},
 };
+use ptr::{Ptr, be_ptr};
 use srv::{Srv, WriteSrv, be_srv};
 use txt::Txt;
 
 use super::name::{Name, be_name};
-use crate::parser::name::WriteName;
+use crate::parser::{name::WriteName, record::ptr::WritePtr};
 
+pub mod ptr;
 pub mod srv;
 pub mod txt;
 /// '''text
@@ -37,7 +39,7 @@ pub mod txt;
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 /// '''
 #[derive(Debug)]
-pub struct ResourceRecord<'a> {
+pub struct ResourceRecord {
     pub(crate) name: Name,
     pub(crate) typ: Type,
     /// Whether or not the set of resource records is fully contained in the
@@ -46,7 +48,7 @@ pub struct ResourceRecord<'a> {
     pub(crate) multicast_unique: bool,
     pub(crate) cls: Class,
     pub(crate) ttl: u32,
-    pub(crate) data: RData<'a>,
+    pub(crate) data: RData,
 }
 
 /// The CLASS value according to RFC 1035
@@ -93,13 +95,14 @@ pub enum Type {
     /// a host addresss
     A,
     /// IPv6 host address (RFC 2782)
-    AAAA,
+    Aaaa,
     /// the canonical name for an alias
-    CNAME,
+    Cname,
     /// text strings
-    TXT,
+    Txt,
     /// service record (RFC 2782)
-    SRV,
+    Srv,
+    Ptr,
     /// Unimplemented record type
     Unimplemented(u16),
 }
@@ -108,39 +111,39 @@ impl Type {
     pub fn from_u16(value: u16) -> Self {
         match value {
             1 => Self::A,
-            28 => Self::AAAA,
-            5 => Self::CNAME,
-            16 => Self::TXT,
-            33 => Self::SRV,
+            28 => Self::Aaaa,
+            5 => Self::Cname,
+            16 => Self::Txt,
+            33 => Self::Srv,
+            12 => Self::Ptr,
             _ => Self::Unimplemented(value),
         }
     }
     pub fn to_u16(self) -> u16 {
         match self {
             Self::A => 1,
-            Self::AAAA => 28,
-            Self::CNAME => 5,
-            Self::TXT => 16,
-            Self::SRV => 33,
+            Self::Aaaa => 28,
+            Self::Cname => 5,
+            Self::Txt => 16,
+            Self::Srv => 33,
+            Self::Ptr => 12,
             Self::Unimplemented(value) => value,
         }
     }
 }
 
 #[derive(Debug)]
-pub enum RData<'a> {
+pub enum RData {
     A(Ipv4Addr),
     Aaaa(Ipv6Addr),
-    Cname(Name),
-    Txt(Txt<'a>),
+    CName(Name),
+    Txt(Txt),
     Srv(Srv),
-    Unknown(&'a [u8]),
+    Ptr(Ptr),
+    Unknown(),
 }
 
-pub fn be_record<'a>(
-    input: &'a [u8],
-    origin: &'a [u8],
-) -> nom::IResult<&'a [u8], ResourceRecord<'a>> {
+pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], ResourceRecord> {
     let (remain, name) = be_name(input, origin)?;
     let (remian, typ) = be_u16(remain)?;
     let (remain, cls) = be_u16(remian)?;
@@ -166,17 +169,18 @@ fn be_rdata<'a>(
     origin: &'a [u8],
     typ: Type,
     rdlen: u16,
-) -> nom::IResult<&'a [u8], RData<'a>> {
+) -> nom::IResult<&'a [u8], RData> {
     match typ {
         Type::A => map(be_u32, |ip| RData::A(Ipv4Addr::from(ip))).parse(input),
-        Type::AAAA => map(be_u128, |ip| RData::Aaaa(Ipv6Addr::from(ip))).parse(input),
-        Type::CNAME => be_name(input, origin).map(|(remian, name)| (remian, RData::Cname(name))),
-        Type::TXT => map(take(rdlen), |txt| RData::Txt(Txt::new(txt))).parse(input),
-        Type::SRV => {
+        Type::Aaaa => map(be_u128, |ip| RData::Aaaa(Ipv6Addr::from(ip))).parse(input),
+        Type::Cname => be_name(input, origin).map(|(remian, name)| (remian, RData::CName(name))),
+        Type::Txt => map(take(rdlen), |txt: &[u8]| RData::Txt(Txt::new(txt.to_vec()))).parse(input),
+        Type::Srv => {
             let (remain, srv) = be_srv(input, origin)?;
             Ok((remain, RData::Srv(srv)))
         }
-        Type::Unimplemented(_) => map(take(rdlen), RData::Unknown).parse(input),
+        Type::Ptr => be_ptr(input, origin).map(|(remian, ptr)| (remian, RData::Ptr(ptr))),
+        Type::Unimplemented(_) => Ok((input, RData::Unknown())),
     }
 }
 
@@ -198,10 +202,11 @@ impl<T: BufMut> WriteRecord for T {
         match &record.data {
             RData::A(ip) => self.put_slice(&ip.octets()),
             RData::Aaaa(ip) => self.put_slice(&ip.octets()),
-            RData::Cname(name) => self.put_name(name),
+            RData::CName(name) => self.put_name(name),
             RData::Txt(txt) => self.put_slice(txt),
             RData::Srv(srv) => self.put_srv(srv),
-            RData::Unknown(unknown) => self.put_slice(unknown),
+            RData::Ptr(ptr) => self.put_ptr(ptr),
+            RData::Unknown() => (),
         }
     }
 }

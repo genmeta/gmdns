@@ -30,13 +30,15 @@ pub enum QueryType {
     /// a host addresss
     A,
     /// IPv6 host address (RFC 2782)
-    AAAA,
+    Aaaa,
     /// the canonical name for an alias
-    CNAME,
+    Cname,
     /// text strings
-    TXT,
+    Txt,
     /// service record (RFC 2782)
-    SRV,
+    Srv,
+    /// a domain name pointer
+    Ptr,
     /// Unimplemented record type
     Unimplemented(u16),
 }
@@ -45,20 +47,22 @@ impl QueryType {
     pub fn from_u16(value: u16) -> Self {
         match value {
             1 => Self::A,
-            28 => Self::AAAA,
-            5 => Self::CNAME,
-            16 => Self::TXT,
-            33 => Self::SRV,
+            28 => Self::Aaaa,
+            5 => Self::Cname,
+            16 => Self::Txt,
+            33 => Self::Srv,
+            12 => Self::Ptr,
             _ => Self::Unimplemented(value),
         }
     }
     pub fn to_u16(&self) -> u16 {
         match self {
             Self::A => 1,
-            Self::AAAA => 28,
-            Self::CNAME => 5,
-            Self::TXT => 16,
-            Self::SRV => 33,
+            Self::Aaaa => 28,
+            Self::Cname => 5,
+            Self::Txt => 16,
+            Self::Srv => 33,
+            Self::Ptr => 12,
             Self::Unimplemented(value) => *value,
         }
     }
@@ -93,7 +97,7 @@ impl QueryClass {
         }
     }
 
-    pub fn to_u16(&self) -> u16 {
+    pub fn to_u16(self) -> u16 {
         match self {
             Self::IN => 1,
             Self::CS => 2,
@@ -128,6 +132,10 @@ impl<T: BufMut> WriteQuestion for T {
     fn put_question(&mut self, question: &Question) {
         self.put_name(&question.name);
         self.put_u16(question.qtype.to_u16());
-        self.put_u16(question.qclass.to_u16());
+        let mut qclass = question.qclass.to_u16();
+        if question.prefer_unicast {
+            qclass |= 0x8000;
+        }
+        self.put_u16(qclass);
     }
 }

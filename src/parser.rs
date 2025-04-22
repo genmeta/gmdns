@@ -1,5 +1,5 @@
-mod header;
-mod name;
-mod packet;
-mod question;
-mod record;
+pub(crate) mod header;
+pub(crate) mod name;
+pub(crate) mod packet;
+pub(crate) mod question;
+pub(crate) mod record;
