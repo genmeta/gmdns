@@ -47,7 +47,7 @@ fn be_label<'a>(
     }
     if (len & 0xC0) == 0xC0 {
         let (remain, offset_byte) = be_u8(remain)?;
-        let offset = ((len & 0x3F) as u16) << 8 | offset_byte as u16;
+        let offset = (((len & 0x3F) as u16) << 8) | offset_byte as u16;
         let offset = offset as usize;
         if offset >= origin.len() {
             return Err(nom::Err::Error(nom::error::Error::new(

@@ -8,8 +8,9 @@ nom = "8"
 bytes = "1"
 bitfield-struct = "0.10"
 tracing = "0.1"
-socket2 = {version = "0.5.9", features = ["all"]}
-tokio = { version = "1", features = ["time","macros", "net", "sync", "rt"]}
+tracing-subscriber = "0.3"
+socket2 = { version = "0.5.9", features = ["all"] }
+tokio = { version = "1", features = ["time", "macros", "net", "sync", "rt"] }
 tokio-stream = "0.1.17"
 clap = { version = "4", features = ["derive"] }
 

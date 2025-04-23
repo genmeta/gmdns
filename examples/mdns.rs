@@ -1,4 +1,4 @@
-use std::{io::Error, net::SocketAddr, time::Duration};
+use std::{io::Error, net::SocketAddr};
 
 use clap::Parser;
 use tokio_stream::StreamExt;
@@ -15,9 +15,10 @@ struct Args {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     let mut mdns =
-        gmdns::mdns::ArcMDNS::new(SERVICE_NAME.to_string(), [args.bind.ip()].to_vec(), 6000);
+        gmdns::mdns::ArcMdns::new(SERVICE_NAME.to_string(), [args.bind.ip()].to_vec(), 6000);
 
     while let Some(packet) = mdns.discover().next().await {
         info!("{:?}", packet);

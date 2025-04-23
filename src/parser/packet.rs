@@ -2,7 +2,7 @@ use bytes::BufMut;
 use nom::Parser;
 
 use super::{
-    header::{self, Header, Opcode, be_header},
+    header::{Header, be_header},
     question::{QueryClass, QueryType, Question, be_question},
     record::{Class, RData, ResourceRecord},
 };
@@ -13,7 +13,7 @@ use crate::parser::{
 };
 
 /// Parsed DNS packet
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Packet {
     pub header: Header,
     pub questions: Vec<Question>,
@@ -23,26 +23,6 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub fn new() -> Self {
-        let flag = header::Flags::new();
-        flag.with_query(false).set_opcode(Opcode::StandardQuery);
-        let head = header::Header {
-            id: 0,
-            flags: flag,
-            questions_count: 0,
-            answers_count: 0,
-            nameservers_count: 0,
-            additional_count: 0,
-        };
-        Packet {
-            header: head,
-            questions: vec![],
-            answers: vec![],
-            nameservers: vec![],
-            additional: vec![],
-        }
-    }
-
     pub fn add_question(
         &mut self,
         qname: &str,

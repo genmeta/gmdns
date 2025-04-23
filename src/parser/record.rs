@@ -9,6 +9,7 @@ use nom::{
 };
 use ptr::{Ptr, be_ptr};
 use srv::{Srv, WriteSrv, be_srv};
+use tracing::warn;
 use txt::Txt;
 
 use super::name::{Name, be_name};
@@ -73,7 +74,10 @@ impl Class {
             2 => Self::CS,
             3 => Self::CH,
             4 => Self::HS,
-            _ => panic!("Unknown class {}", value),
+            _ => {
+                warn!("Unknown class value: {}", value);
+                Self::IN
+            }
         }
     }
 

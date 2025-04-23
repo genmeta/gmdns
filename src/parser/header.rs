@@ -31,6 +31,21 @@ pub struct Header {
     pub(crate) additional_count: u16,
 }
 
+impl Default for Header {
+    fn default() -> Self {
+        let flags = Flags::new();
+        flags.with_query(false).set_opcode(Opcode::StandardQuery);
+        Self {
+            id: 0,
+            flags,
+            questions_count: 0,
+            answers_count: 0,
+            nameservers_count: 0,
+            additional_count: 0,
+        }
+    }
+}
+
 /// See https://datatracker.ietf.org/doc/html/rfc6762#autoid-48
 #[bitfield(u16, order = Msb)]
 #[derive(PartialEq, Eq)]
