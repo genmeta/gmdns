@@ -98,6 +98,8 @@ impl Class {
 pub enum Type {
     /// a host addresss
     A,
+    /// an authoritative name server
+    Ns,
     /// IPv6 host address (RFC 2782)
     Aaaa,
     /// the canonical name for an alias
@@ -106,6 +108,7 @@ pub enum Type {
     Txt,
     /// service record (RFC 2782)
     Srv,
+    /// a domain name pointer
     Ptr,
     /// Unimplemented record type
     Unimplemented(u16),
@@ -115,6 +118,7 @@ impl Type {
     pub fn from_u16(value: u16) -> Self {
         match value {
             1 => Self::A,
+            2 => Self::Ns,
             28 => Self::Aaaa,
             5 => Self::Cname,
             16 => Self::Txt,
@@ -126,6 +130,7 @@ impl Type {
     pub fn to_u16(self) -> u16 {
         match self {
             Self::A => 1,
+            Self::Ns => 2,
             Self::Aaaa => 28,
             Self::Cname => 5,
             Self::Txt => 16,
@@ -147,10 +152,24 @@ pub enum RData {
     Unknown(),
 }
 
+impl RData {
+    pub fn len(&self) -> usize {
+        match self {
+            RData::A(_ip) => 4,
+            RData::Aaaa(_ip) => 16,
+            RData::CName(name) => name.len(),
+            RData::Txt(txt) => txt.len(),
+            RData::Srv(srv) => srv.len(),
+            RData::Ptr(ptr) => ptr.len(),
+            RData::Unknown() => 0,
+        }
+    }
+}
+
 pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], ResourceRecord> {
     let (remain, name) = be_name(input, origin)?;
-    let (remian, typ) = be_u16(remain)?;
-    let (remain, cls) = be_u16(remian)?;
+    let (remain, typ) = be_u16(remain)?;
+    let (remain, cls) = be_u16(remain)?;
     let (remain, ttl) = be_u32(remain)?;
     let (remain, rdlen) = be_u16(remain)?;
     let (remain, rdata) = be_rdata(remain, origin, Type::from_u16(typ), rdlen)?;
@@ -177,14 +196,15 @@ fn be_rdata<'a>(
     match typ {
         Type::A => map(be_u32, |ip| RData::A(Ipv4Addr::from(ip))).parse(input),
         Type::Aaaa => map(be_u128, |ip| RData::Aaaa(Ipv6Addr::from(ip))).parse(input),
-        Type::Cname => be_name(input, origin).map(|(remian, name)| (remian, RData::CName(name))),
+        Type::Cname => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
         Type::Txt => map(take(rdlen), |txt: &[u8]| RData::Txt(Txt::new(txt.to_vec()))).parse(input),
         Type::Srv => {
             let (remain, srv) = be_srv(input, origin)?;
             Ok((remain, RData::Srv(srv)))
         }
-        Type::Ptr => be_ptr(input, origin).map(|(remian, ptr)| (remian, RData::Ptr(ptr))),
-        Type::Unimplemented(_) => Ok((input, RData::Unknown())),
+        Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
+        Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
+        Type::Unimplemented(_) => Ok((&input[rdlen as usize..], RData::Unknown())),
     }
 }
 
@@ -202,8 +222,18 @@ impl<T: BufMut> WriteRecord for T {
         }
         self.put_u16(cls);
         self.put_u32(record.ttl);
+        self.put_u16(record.data.len() as u16);
+        self.put_rdata(&record.data);
+    }
+}
 
-        match &record.data {
+pub trait WriteRData {
+    fn put_rdata(&mut self, rdata: &RData);
+}
+
+impl<T: BufMut> WriteRData for T {
+    fn put_rdata(&mut self, rdata: &RData) {
+        match rdata {
             RData::A(ip) => self.put_slice(&ip.octets()),
             RData::Aaaa(ip) => self.put_slice(&ip.octets()),
             RData::CName(name) => self.put_name(name),

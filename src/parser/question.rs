@@ -93,7 +93,7 @@ impl QueryClass {
             3 => Self::CH,
             4 => Self::HS,
             255 => Self::Any,
-            _ => panic!("Unknown class {}", value),
+            _ => panic!("Unknown class {value}"),
         }
     }
 

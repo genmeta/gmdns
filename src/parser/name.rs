@@ -49,13 +49,7 @@ fn be_label<'a>(
         let (remain, offset_byte) = be_u8(remain)?;
         let offset = (((len & 0x3F) as u16) << 8) | offset_byte as u16;
         let offset = offset as usize;
-        if offset >= origin.len() {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Verify,
-            )));
-        }
-        if visited.contains(&offset) {
+        if offset >= origin.len() || visited.contains(&offset) {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Verify,

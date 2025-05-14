@@ -9,7 +9,6 @@ use bytes::BytesMut;
 use socket2::{Domain, Socket, Type};
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, wrappers::UnboundedReceiverStream};
-use tracing::info;
 
 use crate::parser::{
     self,
@@ -22,6 +21,7 @@ const MULTICAST_PORT: u16 = 5353;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 
 struct Mdns {
+    domain: String,
     service_name: String,
     io: Arc<tokio::net::UdpSocket>,
     address: Vec<IpAddr>,
@@ -29,7 +29,12 @@ struct Mdns {
 }
 
 impl Mdns {
-    fn new(service_name: String, address: Vec<IpAddr>, port: u16) -> io::Result<Self> {
+    fn new(
+        domain: String,
+        service_name: String,
+        address: Vec<IpAddr>,
+        port: u16,
+    ) -> io::Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -42,6 +47,7 @@ impl Mdns {
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
         Ok(Self {
+            domain,
             service_name,
             io,
             address,
@@ -54,12 +60,12 @@ impl Mdns {
 pub struct ArcMdns(Arc<Mutex<Mdns>>);
 
 impl ArcMdns {
-    pub fn new(service_name: String, address: Vec<IpAddr>, port: u16) -> Self {
-        let mdns = Mdns::new(service_name, address, port).unwrap();
+    pub fn new(domain: String, service_name: String, address: Vec<IpAddr>, port: u16) -> Self {
+        let mdns = Mdns::new(domain, service_name, address, port).unwrap();
         ArcMdns(Arc::new(Mutex::new(mdns)))
     }
 
-    pub fn discover(&mut self) -> impl Stream<Item = Packet> {
+    pub fn discover(&mut self) -> impl Stream<Item = (String, Vec<SocketAddr>)> {
         let (response_tx, response_rx) = mpsc::unbounded_channel();
         let guard = self.0.lock().unwrap();
         let io = guard.io.clone();
@@ -68,16 +74,14 @@ impl ArcMdns {
             async move {
                 loop {
                     let mut recv_buffer = [0u8; 1024];
-                    let (count, src) = io.recv_from(&mut recv_buffer).await.unwrap();
-                    info!("recv from {:?}", src);
+                    let (count, _src) = io.recv_from(&mut recv_buffer).await.unwrap();
                     match be_packet(&recv_buffer[..count]) {
                         Ok((_remain, packet)) => match packet.header.flags.query() {
                             true => {
-                                info!("recv response");
-                                let _ = response_tx.send(packet);
+                                let (domian, addr) = mdns.parse_response(&packet).unwrap();
+                                let _ = response_tx.send((domian, addr));
                             }
                             false => {
-                                info!("recv query");
                                 let _ = mdns.send_response().await;
                             }
                         },
@@ -95,7 +99,6 @@ impl ArcMdns {
         // 定时发布 query
         tokio::spawn(async move {
             loop {
-                info!("send query");
                 let _ = Self::send_query(io.clone(), service_name.clone()).await;
                 tokio::time::sleep(Duration::from_secs(15)).await;
             }
@@ -111,9 +114,7 @@ impl ArcMdns {
         let mut buf = BytesMut::with_capacity(512);
         let mut question = Packet::default();
         question.add_question(&service_name, QueryType::Ptr, QueryClass::IN, false);
-        info!("send query {:?}", question);
         buf.put_packet(&question);
-
         let addr = SocketAddr::new(IpAddr::V4(MULTICAST_ADDR), MULTICAST_PORT);
         io.send_to(&buf[..], &addr).await?;
         Ok(())
@@ -122,6 +123,7 @@ impl ArcMdns {
     fn reponse_packet(&self) -> Packet {
         let mut response = Packet::default();
         let garud = self.0.lock().unwrap();
+        response.add_question(&garud.service_name, QueryType::Ptr, QueryClass::IN, false);
         for ip in garud.address.iter() {
             let (rtype, rdata) = match ip {
                 IpAddr::V4(ipv4_addr) => (
@@ -142,7 +144,7 @@ impl ArcMdns {
             );
         }
 
-        let srv = Srv::new(0, 0, garud.port, garud.service_name.clone());
+        let srv = Srv::new(0, 0, garud.port, garud.domain.clone());
         response.add_response(
             &garud.service_name,
             parser::record::Type::Srv,
@@ -151,6 +153,31 @@ impl ArcMdns {
             parser::record::RData::Srv(srv),
         );
         response
+    }
+
+    fn parse_response(&self, packet: &Packet) -> io::Result<(String, Vec<SocketAddr>)> {
+        let mut addr = vec![];
+        let (port, domain) = packet
+            .answers
+            .iter()
+            .find(|answer| answer.typ == parser::record::Type::Srv)
+            .map(|answer| {
+                if let parser::record::RData::Srv(srv) = &answer.data {
+                    (srv.port(), srv.target().to_string())
+                } else {
+                    (0, "".to_string())
+                }
+            })
+            .unwrap_or((0, "".to_string()));
+        for answer in packet.answers.iter() {
+            if let parser::record::RData::A(ip) = answer.data {
+                addr.push(SocketAddr::new(ip.into(), port));
+            }
+            if let parser::record::RData::Aaaa(ip) = answer.data {
+                addr.push(SocketAddr::new(ip.into(), port));
+            }
+        }
+        Ok((domain, addr))
     }
 
     pub async fn send_response(&self) -> io::Result<()> {

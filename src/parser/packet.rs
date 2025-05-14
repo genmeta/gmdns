@@ -49,6 +49,8 @@ impl Packet {
             ttl,
             data,
         };
+        // true 代表是 response
+        self.header.flags.set_query(true);
         self.header.answers_count += 1;
         self.answers.push(response);
     }
@@ -116,12 +118,15 @@ impl<T: BufMut> WritePacket for T {
 
 #[cfg(test)]
 mod test {
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use bytes::BytesMut;
 
     use super::*;
     use crate::parser::{
+        self,
         question::{QueryClass, QueryType},
-        record::{Class, RData, Type},
+        record::{Class, RData, Type, srv::Srv},
     };
 
     #[test]
@@ -175,6 +180,7 @@ mod test {
 
     #[test]
     fn parse_additional_record_response() {
+        tracing_subscriber::fmt().with_ansi(false).init();
         let response = b"\x4a\xf0\x81\x80\x00\x01\x00\x01\x00\x01\x00\x01\
                          \x03www\x05skype\x03com\x00\x00\x01\x00\x01\
                          \xc0\x0c\x00\x05\x00\x01\x00\x00\x0e\x10\
@@ -202,7 +208,7 @@ mod test {
             RData::CName(cname) => {
                 assert_eq!(cname, "livecms.trafficmanager.net");
             }
-            ref x => panic!("Wrong rdata {:?}", x),
+            ref x => panic!("Wrong rdata {x:?}"),
         }
         assert_eq!(packet.additional.len(), 1);
         assert_eq!(
@@ -215,7 +221,53 @@ mod test {
             RData::A(addr) => {
                 assert_eq!(addr, Ipv4Addr::new(192, 5, 6, 30));
             }
-            ref x => panic!("Wrong rdata {:?}", x),
+            ref x => panic!("Wrong rdata {x:?}"),
         }
+    }
+
+    #[test]
+    fn parse_pack_packet() {
+        let mut response = Packet::default();
+        let address = [
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V6(Ipv6Addr::new(
+                0x2001, 0x0db8, 0x85a3, 0x0000, 0x0000, 0x8a2e, 0x0370, 0x7334,
+            )),
+        ];
+        for ip in address.iter() {
+            let (rtype, rdata) = match ip {
+                IpAddr::V4(ipv4_addr) => (
+                    parser::record::Type::A,
+                    parser::record::RData::A(*ipv4_addr),
+                ),
+                IpAddr::V6(ipv6_addr) => (
+                    parser::record::Type::Aaaa,
+                    parser::record::RData::Aaaa(*ipv6_addr),
+                ),
+            };
+            response.add_response("example.com", rtype, parser::record::Class::IN, 300, rdata);
+        }
+
+        let srv = Srv::new(0, 0, 6000, "example.com".to_string());
+        response.add_response(
+            "example.com",
+            parser::record::Type::Srv,
+            parser::record::Class::IN,
+            300,
+            parser::record::RData::Srv(srv),
+        );
+        let mut buf = BytesMut::with_capacity(512);
+        buf.put_packet(&response);
+        let packet = buf.freeze();
+        let (_, parsed_packet) = be_packet(&packet).unwrap();
+        assert_eq!(parsed_packet.header.id, response.header.id);
+        assert_eq!(
+            parsed_packet.header.questions_count,
+            response.header.questions_count
+        );
+        assert_eq!(parsed_packet.answers.len(), response.answers.len());
+        assert_eq!(parsed_packet.nameservers.len(), response.nameservers.len());
+        assert_eq!(parsed_packet.additional.len(), response.additional.len());
+        assert_eq!(parsed_packet.answers[0].name, response.answers[0].name);
     }
 }

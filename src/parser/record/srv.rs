@@ -24,6 +24,14 @@ impl Srv {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    pub fn len(&self) -> usize {
+        6 + self.target.len()
+    }
+
+    pub fn target(&self) -> &Name {
+        &self.target
+    }
 }
 
 pub fn be_srv<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], Srv> {
