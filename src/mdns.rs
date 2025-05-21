@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{self},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
@@ -8,9 +8,8 @@ use std::{
 
 use bytes::BytesMut;
 use socket2::{Domain, Socket, Type};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self};
 use tokio_stream::{Stream, wrappers::UnboundedReceiverStream};
-use tracing::info;
 
 use crate::parser::{
     self,
@@ -65,7 +64,6 @@ impl Mdns {
         io: Arc<tokio::net::UdpSocket>,
         service_name: String,
     ) -> io::Result<()> {
-        info!("send query");
         let mut buf = BytesMut::with_capacity(512);
         let mut question = Packet::default();
         question.add_question(&service_name, QueryType::Ptr, QueryClass::IN, false);
@@ -96,11 +94,11 @@ impl ArcMdns {
             async move {
                 loop {
                     let mut recv_buffer = [0u8; 1024];
-                    let (count, _src) = io.recv_from(&mut recv_buffer).await.unwrap();
+                    let (count, src) = io.recv_from(&mut recv_buffer).await.unwrap();
                     match be_packet(&recv_buffer[..count]) {
                         Ok((_remain, packet)) => match packet.header.flags.query() {
                             true => {
-                                let (domian, addr) = mdns.parse_response(&packet).unwrap();
+                                let (domian, addr) = mdns.parse_response(&packet, &src).unwrap();
                                 let _ = response_tx.send((domian, addr));
                             }
                             false => {
@@ -114,7 +112,6 @@ impl ArcMdns {
                             }
                         },
                         Err(_) => {
-                            tracing::error!("Invalid packet");
                             continue;
                         }
                     };
@@ -137,9 +134,9 @@ impl ArcMdns {
 
         response.add_question(&guard.service_name, QueryType::Ptr, QueryClass::IN, false);
 
-        let mut srv_targets = HashSet::new();
         const TTL: u32 = 300;
 
+        let mut srv_map: HashMap<String, Srv> = HashMap::new();
         guard.address.iter().for_each(|addr| {
             let (rtype, ip) = match addr.ip() {
                 IpAddr::V4(ipv4) => (parser::record::Type::A, RData::A(ipv4)),
@@ -148,23 +145,24 @@ impl ArcMdns {
 
             let name = format!("{}:{}", domain, addr.port());
             response.add_response(&name, rtype, parser::record::Class::IN, TTL, ip);
-            if srv_targets.insert(name.clone()) {
-                let srv = Srv::new(0, 0, addr.port(), name);
-                response.add_response(
-                    domain,
-                    parser::record::Type::Srv,
-                    parser::record::Class::IN,
-                    TTL,
-                    RData::Srv(srv),
-                );
-            }
+            srv_map
+                .entry(name.clone())
+                .or_insert_with(|| Srv::new(0, 0, addr.port(), name.clone()));
         });
 
+        for srv in srv_map.into_values() {
+            response.add_response(
+                domain,
+                parser::record::Type::Srv,
+                parser::record::Class::IN,
+                TTL,
+                parser::record::RData::Srv(srv),
+            );
+        }
         response
     }
 
     pub async fn send_response(&self) -> io::Result<()> {
-        info!("send response");
         let mut buf = BytesMut::with_capacity(512);
         let response = self.response_packet();
         let io = self.0.lock().unwrap().io.clone();
@@ -174,7 +172,11 @@ impl ArcMdns {
         Ok(())
     }
 
-    fn parse_response(&self, packet: &Packet) -> io::Result<(String, Vec<SocketAddr>)> {
+    fn parse_response(
+        &self,
+        packet: &Packet,
+        src: &SocketAddr,
+    ) -> io::Result<(String, Vec<SocketAddr>)> {
         let mut map_ports = HashMap::new();
         let mut domain = String::new();
         packet
@@ -190,7 +192,7 @@ impl ArcMdns {
                 }
             });
 
-        let addr = packet
+        let mut addrs: Vec<SocketAddr> = packet
             .answers
             .iter()
             .filter_map(|a| {
@@ -202,7 +204,10 @@ impl ArcMdns {
                 }
             })
             .collect();
-
-        Ok((domain, addr))
+        // 找到和 SRC IP 相同的地址，放在最前面，提高连接成功率
+        if let Some(index) = addrs.iter().position(|addr| addr.ip() == src.ip()) {
+            addrs.swap(0, index);
+        }
+        Ok((domain, addrs))
     }
 }

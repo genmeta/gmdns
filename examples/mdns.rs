@@ -22,13 +22,16 @@ async fn main() -> Result<(), Error> {
     let mut mdns = gmdns::mdns::ArcMdns::new(
         args.domain.clone(),
         SERVICE_NAME.to_string(),
-        [args.local_addr].to_vec(),
+        [
+            args.local_addr,
+            "[::1]:8000".parse().unwrap(),
+            "192.168.1.7:7003".parse().unwrap(),
+        ]
+        .to_vec(),
     );
 
-    while let Some(ret) = mdns.discover().next().await {
-        if ret.0.is_empty() {
-            continue;
-        }
+    let mut stream = mdns.discover();
+    while let Some(ret) = stream.next().await {
         info!("discovery response: {:?}", ret);
     }
     Ok(())

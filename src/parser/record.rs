@@ -9,7 +9,6 @@ use nom::{
 };
 use ptr::{Ptr, be_ptr};
 use srv::{Srv, WriteSrv, be_srv};
-use tracing::warn;
 use txt::Txt;
 
 use super::name::{Name, be_name};
@@ -74,10 +73,7 @@ impl Class {
             2 => Self::CS,
             3 => Self::CH,
             4 => Self::HS,
-            _ => {
-                warn!("Unknown class value: {}", value);
-                Self::IN
-            }
+            _ => Self::IN,
         }
     }
 
@@ -204,7 +200,7 @@ fn be_rdata<'a>(
         }
         Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
         Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
-        Type::Unimplemented(_) => Ok((&input[rdlen as usize..], RData::Unknown())),
+        Type::Unimplemented(_) => Ok((input, RData::Unknown())),
     }
 }
 
