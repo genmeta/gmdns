@@ -22,8 +22,7 @@ async fn main() -> Result<(), Error> {
     let mut mdns = gmdns::mdns::ArcMdns::new(
         args.domain.clone(),
         SERVICE_NAME.to_string(),
-        [args.local_addr.ip()].to_vec(),
-        args.local_addr.port(),
+        [args.local_addr].to_vec(),
     );
 
     while let Some(ret) = mdns.discover().next().await {

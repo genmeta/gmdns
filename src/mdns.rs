@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     io::{self},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
@@ -9,12 +10,13 @@ use bytes::BytesMut;
 use socket2::{Domain, Socket, Type};
 use tokio::sync::mpsc;
 use tokio_stream::{Stream, wrappers::UnboundedReceiverStream};
+use tracing::info;
 
 use crate::parser::{
     self,
     packet::{Packet, WritePacket, be_packet},
     question::{QueryClass, QueryType},
-    record::srv::Srv,
+    record::{RData, srv::Srv},
 };
 
 const MULTICAST_PORT: u16 = 5353;
@@ -24,17 +26,11 @@ struct Mdns {
     domain: String,
     service_name: String,
     io: Arc<tokio::net::UdpSocket>,
-    address: Vec<IpAddr>,
-    port: u16,
+    address: Vec<SocketAddr>,
 }
 
 impl Mdns {
-    fn new(
-        domain: String,
-        service_name: String,
-        address: Vec<IpAddr>,
-        port: u16,
-    ) -> io::Result<Self> {
+    fn new(domain: String, service_name: String, address: Vec<SocketAddr>) -> io::Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -45,14 +41,38 @@ impl Mdns {
         socket.set_multicast_loop_v4(false)?;
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
+        // 定时发布 query
+        tokio::spawn({
+            let service_name = service_name.clone();
+            let io = io.clone();
+            async move {
+                loop {
+                    let _ = Self::send_query(io.clone(), service_name.clone()).await;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        });
 
         Ok(Self {
             domain,
             service_name,
             io,
             address,
-            port,
         })
+    }
+
+    pub async fn send_query(
+        io: Arc<tokio::net::UdpSocket>,
+        service_name: String,
+    ) -> io::Result<()> {
+        info!("send query");
+        let mut buf = BytesMut::with_capacity(512);
+        let mut question = Packet::default();
+        question.add_question(&service_name, QueryType::Ptr, QueryClass::IN, false);
+        buf.put_packet(&question);
+        let addr = SocketAddr::new(IpAddr::V4(MULTICAST_ADDR), MULTICAST_PORT);
+        io.send_to(&buf[..], &addr).await?;
+        Ok(())
     }
 }
 
@@ -60,8 +80,9 @@ impl Mdns {
 pub struct ArcMdns(Arc<Mutex<Mdns>>);
 
 impl ArcMdns {
-    pub fn new(domain: String, service_name: String, address: Vec<IpAddr>, port: u16) -> Self {
-        let mdns = Mdns::new(domain, service_name, address, port).unwrap();
+    pub fn new(domain: String, service_name: String, address: Vec<SocketAddr>) -> Self {
+        let mdns = Mdns::new(domain, service_name, address).unwrap();
+
         ArcMdns(Arc::new(Mutex::new(mdns)))
     }
 
@@ -69,6 +90,7 @@ impl ArcMdns {
         let (response_tx, response_rx) = mpsc::unbounded_channel();
         let guard = self.0.lock().unwrap();
         let io = guard.io.clone();
+        let service_name = guard.service_name.clone();
         tokio::spawn({
             let mdns = self.clone();
             async move {
@@ -82,7 +104,13 @@ impl ArcMdns {
                                 let _ = response_tx.send((domian, addr));
                             }
                             false => {
-                                let _ = mdns.send_response().await;
+                                if packet
+                                    .questions
+                                    .iter()
+                                    .any(|question| question.name == service_name)
+                                {
+                                    let _ = mdns.send_response().await;
+                                }
                             }
                         },
                         Err(_) => {
@@ -94,99 +122,82 @@ impl ArcMdns {
             }
         });
 
-        let io = guard.io.clone();
-        let service_name = guard.service_name.clone();
-        // 定时发布 query
-        tokio::spawn(async move {
-            loop {
-                let _ = Self::send_query(io.clone(), service_name.clone()).await;
-                tokio::time::sleep(Duration::from_secs(15)).await;
-            }
-        });
-
         UnboundedReceiverStream::new(response_rx)
     }
 
-    pub async fn send_query(
-        io: Arc<tokio::net::UdpSocket>,
-        service_name: String,
-    ) -> io::Result<()> {
-        let mut buf = BytesMut::with_capacity(512);
-        let mut question = Packet::default();
-        question.add_question(&service_name, QueryType::Ptr, QueryClass::IN, false);
-        buf.put_packet(&question);
-        let addr = SocketAddr::new(IpAddr::V4(MULTICAST_ADDR), MULTICAST_PORT);
-        io.send_to(&buf[..], &addr).await?;
-        Ok(())
-    }
-
-    fn reponse_packet(&self) -> Packet {
+    fn response_packet(&self) -> Packet {
         let mut response = Packet::default();
-        let garud = self.0.lock().unwrap();
-        response.add_question(&garud.service_name, QueryType::Ptr, QueryClass::IN, false);
-        for ip in garud.address.iter() {
-            let (rtype, rdata) = match ip {
-                IpAddr::V4(ipv4_addr) => (
-                    parser::record::Type::A,
-                    parser::record::RData::A(*ipv4_addr),
-                ),
-                IpAddr::V6(ipv6_addr) => (
-                    parser::record::Type::Aaaa,
-                    parser::record::RData::Aaaa(*ipv6_addr),
-                ),
-            };
-            response.add_response(
-                &garud.service_name,
-                rtype,
-                parser::record::Class::IN,
-                300,
-                rdata,
-            );
-        }
+        let guard = self.0.lock().unwrap();
+        let domain = &guard.domain;
 
-        let srv = Srv::new(0, 0, garud.port, garud.domain.clone());
-        response.add_response(
-            &garud.service_name,
-            parser::record::Type::Srv,
-            parser::record::Class::IN,
-            300,
-            parser::record::RData::Srv(srv),
-        );
+        response.add_question(&guard.service_name, QueryType::Ptr, QueryClass::IN, false);
+
+        let mut srv_targets = HashSet::new();
+        const TTL: u32 = 300;
+
+        guard.address.iter().for_each(|addr| {
+            let (rtype, ip) = match addr.ip() {
+                IpAddr::V4(ipv4) => (parser::record::Type::A, RData::A(ipv4)),
+                IpAddr::V6(ipv6) => (parser::record::Type::Aaaa, RData::Aaaa(ipv6)),
+            };
+
+            let name = format!("{}:{}", domain, addr.port());
+            response.add_response(&name, rtype, parser::record::Class::IN, TTL, ip);
+            if srv_targets.insert(name.clone()) {
+                let srv = Srv::new(0, 0, addr.port(), name);
+                response.add_response(
+                    domain,
+                    parser::record::Type::Srv,
+                    parser::record::Class::IN,
+                    TTL,
+                    RData::Srv(srv),
+                );
+            }
+        });
+
         response
     }
 
-    fn parse_response(&self, packet: &Packet) -> io::Result<(String, Vec<SocketAddr>)> {
-        let mut addr = vec![];
-        let (port, domain) = packet
-            .answers
-            .iter()
-            .find(|answer| answer.typ == parser::record::Type::Srv)
-            .map(|answer| {
-                if let parser::record::RData::Srv(srv) = &answer.data {
-                    (srv.port(), srv.target().to_string())
-                } else {
-                    (0, "".to_string())
-                }
-            })
-            .unwrap_or((0, "".to_string()));
-        for answer in packet.answers.iter() {
-            if let parser::record::RData::A(ip) = answer.data {
-                addr.push(SocketAddr::new(ip.into(), port));
-            }
-            if let parser::record::RData::Aaaa(ip) = answer.data {
-                addr.push(SocketAddr::new(ip.into(), port));
-            }
-        }
-        Ok((domain, addr))
-    }
-
     pub async fn send_response(&self) -> io::Result<()> {
+        info!("send response");
         let mut buf = BytesMut::with_capacity(512);
-        let response = self.reponse_packet();
+        let response = self.response_packet();
         let io = self.0.lock().unwrap().io.clone();
         let addr = SocketAddr::new(IpAddr::V4(MULTICAST_ADDR), MULTICAST_PORT);
         buf.put_packet(&response);
         io.send_to(&buf[..], addr).await?;
         Ok(())
+    }
+
+    fn parse_response(&self, packet: &Packet) -> io::Result<(String, Vec<SocketAddr>)> {
+        let mut map_ports = HashMap::new();
+        let mut domain = String::new();
+        packet
+            .answers
+            .iter()
+            .filter(|a| a.typ == parser::record::Type::Srv)
+            .for_each(|a| {
+                if let parser::record::RData::Srv(srv) = &a.data {
+                    map_ports.insert(srv.target().clone(), srv.port());
+                    if domain.is_empty() {
+                        domain = a.name.clone();
+                    }
+                }
+            });
+
+        let addr = packet
+            .answers
+            .iter()
+            .filter_map(|a| {
+                let port = map_ports.get(&a.name).copied().unwrap_or(0);
+                match &a.data {
+                    parser::record::RData::A(ip) => Some((*ip, port).into()),
+                    parser::record::RData::Aaaa(ip) => Some((*ip, port).into()),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok((domain, addr))
     }
 }
