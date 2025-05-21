@@ -125,6 +125,11 @@ impl ArcMdns {
         UnboundedReceiverStream::new(response_rx)
     }
 
+    pub fn publish(&self, address: Vec<SocketAddr>) {
+        let mut guard = self.0.lock().unwrap();
+        guard.address = address;
+    }
+
     fn response_packet(&self) -> Packet {
         let mut response = Packet::default();
         let guard = self.0.lock().unwrap();
