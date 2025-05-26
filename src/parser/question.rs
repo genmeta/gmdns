@@ -39,6 +39,15 @@ pub enum QueryType {
     Srv,
     /// a domain name pointer
     Ptr,
+    /// Unassigned 265-32767
+    /// 266 a ipv4 address,
+    E,
+    /// 267 a ipv6 address,
+    E6,
+    /// 268 a ipv4 relay endpoint,
+    EE,
+    /// 269 a ipv6 relay endpoint,
+    EE6,
     /// Unimplemented record type
     Unimplemented(u16),
 }
@@ -52,6 +61,10 @@ impl QueryType {
             16 => Self::Txt,
             33 => Self::Srv,
             12 => Self::Ptr,
+            266 => Self::E,
+            267 => Self::E6,
+            268 => Self::EE,
+            269 => Self::EE6,
             _ => Self::Unimplemented(value),
         }
     }
@@ -63,6 +76,10 @@ impl QueryType {
             Self::Txt => 16,
             Self::Srv => 33,
             Self::Ptr => 12,
+            Self::E => 266,
+            Self::E6 => 267,
+            Self::EE => 268,
+            Self::EE6 => 269,
             Self::Unimplemented(value) => *value,
         }
     }

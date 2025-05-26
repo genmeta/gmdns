@@ -2,9 +2,8 @@ use std::{io::Error, net::SocketAddr};
 
 use clap::Parser;
 use tokio_stream::StreamExt;
-use tracing::info;
 
-const SERVICE_NAME: &str = "_genmeta._quic.local";
+const SERVICE_NAME: &str = "_genmeta.local";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -18,21 +17,23 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
-    let args = Args::parse();
-    let mut mdns = gmdns::mdns::ArcMdns::new(
-        args.domain.clone(),
-        SERVICE_NAME.to_string(),
-        [
-            args.local_addr,
-            "[::1]:8000".parse().unwrap(),
-            "192.168.1.7:7003".parse().unwrap(),
-        ]
-        .to_vec(),
+    let mut mdns = gmdns::mdns::Mdns::new(SERVICE_NAME.to_string())?;
+    mdns.add_host(
+        "test.genmeta.net".to_string(),
+        vec![
+            "192.168.1.7:7000".parse().unwrap(),
+            "192.168.1.13:7000".parse().unwrap(),
+        ],
+    );
+
+    mdns.add_host(
+        "test2.genmeta.net".to_string(),
+        vec!["192.168.1.7:7001".parse().unwrap()],
     );
 
     let mut stream = mdns.discover();
-    while let Some(ret) = stream.next().await {
-        info!("discovery response: {:?}", ret);
+    while let Some((addr, packet)) = stream.next().await {
+        println!("Received packet from {}: {:?}", addr, packet);
     }
     Ok(())
 }

@@ -23,6 +23,28 @@ pub struct Packet {
 }
 
 impl Packet {
+    pub fn query_with_id(service_name: String) -> Self {
+        let mut packet = Packet::default();
+        let id: u16 = rand::random();
+        packet.header.id = id;
+        packet.header.flags.set_query(false);
+        packet.add_question(&service_name, QueryType::A, QueryClass::IN, false);
+        packet
+    }
+
+    pub fn reponse_with_id(id: u16) -> Self {
+        let mut packet = Packet::default();
+        packet.header.id = id;
+        packet.header.flags.set_query(true);
+        packet
+    }
+
+    pub fn query(service_name: String) -> Self {
+        let mut packet = Self::default();
+        packet.add_question(&service_name, QueryType::A, QueryClass::IN, true);
+        packet
+    }
+
     pub fn add_question(
         &mut self,
         qname: &str,

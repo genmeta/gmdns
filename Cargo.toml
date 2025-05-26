@@ -13,6 +13,9 @@ socket2 = { version = "0.5.8", features = ["all"] }
 tokio = { version = "1", features = ["time", "macros", "net", "sync", "rt"] }
 tokio-stream = "0.1.17"
 clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+rand = "0.9"
+qbase = { git = "ssh://git@github.com/genmeta/gm-quic-traversal.git", branch = "develop" }
 
 [[example]]
 name = "mdns"

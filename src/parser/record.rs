@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use bytes::BufMut;
+use e::{E, be_e};
 use nom::{
     Parser,
     bytes::streaming::take,
@@ -12,8 +13,12 @@ use srv::{Srv, WriteSrv, be_srv};
 use txt::Txt;
 
 use super::name::{Name, be_name};
-use crate::parser::{name::WriteName, record::ptr::WritePtr};
+use crate::parser::{
+    name::WriteName,
+    record::{e::WriteE, ptr::WritePtr},
+};
 
+pub mod e;
 pub mod ptr;
 pub mod srv;
 pub mod txt;
@@ -90,22 +95,32 @@ impl Class {
 /// The TYPE value according to RFC 1035
 ///
 /// All "EXPERIMENTAL" markers here are from the RFC
+/// See https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Type {
-    /// a host addresss
+    /// 1 a host addresss
     A,
-    /// an authoritative name server
+    /// 2 an authoritative name server
     Ns,
-    /// IPv6 host address (RFC 2782)
+    /// 28 IPv6 host address (RFC 2782)
     Aaaa,
-    /// the canonical name for an alias
+    /// 5 the canonical name for an alias
     Cname,
-    /// text strings
+    /// 16 text strings
     Txt,
-    /// service record (RFC 2782)
+    /// 33 service record (RFC 2782)
     Srv,
-    /// a domain name pointer
+    /// 12 a domain name pointer
     Ptr,
+    /// Unassigned 265-32767
+    /// 266 a ipv4 address,
+    E,
+    /// 267 a ipv6 address,
+    E6,
+    /// 268 a ipv4 relay endpoint,
+    EE,
+    /// 269 a ipv6 relay endpoint,
+    EE6,
     /// Unimplemented record type
     Unimplemented(u16),
 }
@@ -120,6 +135,11 @@ impl Type {
             16 => Self::Txt,
             33 => Self::Srv,
             12 => Self::Ptr,
+            265 => Self::E,
+            266 => Self::E,
+            267 => Self::E6,
+            268 => Self::EE,
+            269 => Self::EE6,
             _ => Self::Unimplemented(value),
         }
     }
@@ -132,6 +152,10 @@ impl Type {
             Self::Txt => 16,
             Self::Srv => 33,
             Self::Ptr => 12,
+            Self::E => 265,
+            Self::E6 => 267,
+            Self::EE => 268,
+            Self::EE6 => 269,
             Self::Unimplemented(value) => value,
         }
     }
@@ -145,6 +169,10 @@ pub enum RData {
     Txt(Txt),
     Srv(Srv),
     Ptr(Ptr),
+    E(E),
+    E6(E),
+    EE(E),
+    EE6(E),
     Unknown(),
 }
 
@@ -157,6 +185,10 @@ impl RData {
             RData::Txt(txt) => txt.len(),
             RData::Srv(srv) => srv.len(),
             RData::Ptr(ptr) => ptr.len(),
+            RData::E(e) => e.len(),
+            RData::E6(e) => e.len(),
+            RData::EE(e) => e.len(),
+            RData::EE6(e) => e.len(),
             RData::Unknown() => 0,
         }
     }
@@ -200,6 +232,10 @@ fn be_rdata<'a>(
         }
         Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
         Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
+        Type::E => be_e(input).map(|(remain, e)| (remain, RData::E(e))),
+        Type::E6 => be_e(input).map(|(remain, e)| (remain, RData::E6(e))),
+        Type::EE => be_e(input).map(|(remain, e)| (remain, RData::EE(e))),
+        Type::EE6 => be_e(input).map(|(remain, e)| (remain, RData::EE6(e))),
         Type::Unimplemented(_) => Ok((input, RData::Unknown())),
     }
 }
@@ -236,6 +272,10 @@ impl<T: BufMut> WriteRData for T {
             RData::Txt(txt) => self.put_slice(txt),
             RData::Srv(srv) => self.put_srv(srv),
             RData::Ptr(ptr) => self.put_ptr(ptr),
+            RData::E(e) => self.put_e(e),
+            RData::E6(e) => self.put_e(e),
+            RData::EE(e) => self.put_e(e),
+            RData::EE6(e) => self.put_e(e),
             RData::Unknown() => (),
         }
     }
