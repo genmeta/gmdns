@@ -38,6 +38,7 @@ impl MdnsProtocol {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
+        #[cfg(not(target_os = "windows"))]
         socket.set_reuse_port(true)?;
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);

@@ -33,7 +33,7 @@ async fn main() -> Result<(), Error> {
 
     let mut stream = mdns.discover();
     while let Some((addr, packet)) = stream.next().await {
-        println!("Received packet from {}: {:?}", addr, packet);
+        println!("Received packet from {addr}: {packet:?}");
     }
     Ok(())
 }

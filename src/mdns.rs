@@ -7,7 +7,6 @@ use std::{
 };
 
 use qbase::net::EndpointAddr;
-use tokio::sync::mpsc::Receiver;
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tracing::{debug, warn};
 
@@ -23,11 +22,11 @@ use crate::{
     protocol::MdnsProtocol,
 };
 
+#[derive(Clone)]
 pub struct Mdns {
     service_name: String,
     proto: MdnsProtocol,
     hosts: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
-    rx: Option<Receiver<(SocketAddr, Packet)>>,
 }
 
 impl Mdns {
@@ -60,8 +59,7 @@ impl Mdns {
                         .any(|q| q.name.contains(&service_name))
                     {
                         debug!(
-                            "[MDNS]: Received query {:?} without service name: {:?}",
-                            query, service_name
+                            "[MDNS]: Received query {query:?} without service name: {service_name:?}",
                         );
                         continue;
                     }
@@ -98,7 +96,6 @@ impl Mdns {
             service_name,
             proto,
             hosts,
-            rx: Some(rx),
         })
     }
 
@@ -146,11 +143,18 @@ impl Mdns {
     }
 
     pub fn discover(&mut self) -> impl Stream<Item = (SocketAddr, Packet)> {
-        ReceiverStream::new(
-            self.rx
-                .take()
-                .expect("[MDNS]: Receiver already taken, cannot discover again!"),
-        )
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn({
+            let proto = self.proto.clone();
+            async move {
+                while let Some((src, packet)) = proto.response_queue().pop().await {
+                    tx.send((src, packet)).await.unwrap_or_else(|e| {
+                        warn!("[MDNS]: Failed to send response packet: {e}");
+                    });
+                }
+            }
+        });
+        ReceiverStream::new(rx)
     }
 
     fn local_name(service_name: String, name: String) -> String {
