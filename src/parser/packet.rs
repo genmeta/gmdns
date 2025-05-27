@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use bytes::BufMut;
 use nom::Parser;
 
 use super::{
     header::{Header, be_header},
     question::{QueryClass, QueryType, Question, be_question},
-    record::{Class, RData, ResourceRecord},
+    record::{Class, RData, ResourceRecord, endpoint::EndpointAddr},
 };
 use crate::parser::{
     header::WriteHeader,
@@ -32,20 +34,31 @@ impl Packet {
         packet
     }
 
-    pub fn reponse_with_id(id: u16) -> Self {
-        let mut packet = Packet::default();
-        packet.header.id = id;
-        packet.header.flags.set_query(true);
-        packet
-    }
-
     pub fn query(service_name: String) -> Self {
         let mut packet = Self::default();
         packet.add_question(&service_name, QueryType::A, QueryClass::IN, true);
         packet
     }
 
-    pub fn add_question(
+    pub fn answer(id: u16, hosts: &HashMap<String, Vec<EndpointAddr>>) -> Self {
+        let mut packet = Self::default();
+        packet.header.id = id;
+        packet.header.flags.set_query(true);
+        hosts.iter().for_each(|(name, eps)| {
+            eps.iter().for_each(|ep| {
+                let (rtype, rdata) = match ep {
+                    EndpointAddr::E(..) => (Type::E, RData::E(*ep)),
+                    EndpointAddr::E6(..) => (Type::E6, RData::E6(*ep)),
+                    EndpointAddr::EE(..) => (Type::EE, RData::EE(*ep)),
+                    EndpointAddr::EE6(..) => (Type::EE6, RData::EE6(*ep)),
+                };
+                packet.add_answer(name, rtype, Class::IN, 300, rdata);
+            });
+        });
+        packet
+    }
+
+    fn add_question(
         &mut self,
         qname: &str,
         qtype: QueryType,
@@ -62,7 +75,7 @@ impl Packet {
         self.questions.push(question);
     }
 
-    pub fn add_response(&mut self, name: &str, rtype: Type, rclass: Class, ttl: u32, data: RData) {
+    fn add_answer(&mut self, name: &str, rtype: Type, rclass: Class, ttl: u32, data: RData) {
         let response = ResourceRecord {
             name: name.to_string(),
             typ: rtype,
@@ -267,11 +280,11 @@ mod test {
                     parser::record::RData::Aaaa(*ipv6_addr),
                 ),
             };
-            response.add_response("example.com", rtype, parser::record::Class::IN, 300, rdata);
+            response.add_answer("example.com", rtype, parser::record::Class::IN, 300, rdata);
         }
 
         let srv = Srv::new(0, 0, 6000, "example.com".to_string());
-        response.add_response(
+        response.add_answer(
             "example.com",
             parser::record::Type::Srv,
             parser::record::Class::IN,

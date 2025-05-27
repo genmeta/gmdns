@@ -2,17 +2,16 @@ use std::{
     future::poll_fn,
     io::{self},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Poll, Waker},
     time::Duration,
 };
 
 use bytes::BytesMut;
 use dashmap::DashMap;
-use qbase::util::ArcAsyncDeque;
 use socket2::{Domain, Socket, Type};
-use tokio::{net::UdpSocket, task::AbortHandle, time::timeout};
-use tracing::{debug, warn};
+use tokio::{net::UdpSocket, sync::mpsc::Receiver, time::timeout};
+use tracing::debug;
 
 use crate::parser::packet::{Packet, WritePacket, be_packet};
 
@@ -24,12 +23,13 @@ enum Reponse {
     Answer((SocketAddr, Packet)),
 }
 
+type ArcReceiver<T> = Arc<Mutex<Option<Receiver<T>>>>;
+
 #[derive(Clone)]
 pub struct MdnsProtocol {
     io: Arc<UdpSocket>,
-    _recv_task: AbortHandle,
-    request_queue: ArcAsyncDeque<(SocketAddr, Packet)>,
-    response_queue: ArcAsyncDeque<(SocketAddr, Packet)>,
+    req_rx: ArcReceiver<(SocketAddr, Packet)>,
+    resp_rx: ArcReceiver<(SocketAddr, Packet)>,
     response_router: Arc<DashMap<u16, Reponse>>,
 }
 
@@ -47,13 +47,11 @@ impl MdnsProtocol {
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
-        let request_queue = ArcAsyncDeque::new();
-        let response_queue = ArcAsyncDeque::new();
+        let (req_tx, req_rx) = tokio::sync::mpsc::channel(64);
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(64);
         let response_router = Arc::new(DashMap::<u16, Reponse>::new());
-        let rcvd_task = {
-            let request_queue = request_queue.clone();
+        let _rcvd_task = {
             let response_router = response_router.clone();
-            let response_queue = response_queue.clone();
             let io = io.clone();
             tokio::spawn(async move {
                 loop {
@@ -65,7 +63,7 @@ impl MdnsProtocol {
                     };
 
                     match (packet.header.flags.query(), packet.header.id) {
-                        (true, 0) => response_queue.push_back((src, packet)),
+                        (true, 0) => resp_tx.send((src, packet)).await.unwrap(),
                         (true, _) => {
                             let waker = match response_router.entry(packet.header.id) {
                                 dashmap::Entry::Occupied(mut entry) => {
@@ -83,10 +81,7 @@ impl MdnsProtocol {
                                 w.wake()
                             }
                         }
-                        (false, _) if request_queue.len() < 64 => {
-                            request_queue.push_back((src, packet))
-                        }
-                        (false, _) => warn!("Request queue is full, dropping packet from {}", src),
+                        (false, _) => req_tx.send((src, packet)).await.unwrap(),
                     }
                 }
             })
@@ -94,9 +89,8 @@ impl MdnsProtocol {
         .abort_handle();
         Ok(Self {
             io,
-            _recv_task: rcvd_task,
-            request_queue,
-            response_queue,
+            req_rx: Arc::new(Mutex::new(Some(req_rx))),
+            resp_rx: Arc::new(Mutex::new(Some(resp_rx))),
             response_router,
         })
     }
@@ -150,11 +144,11 @@ impl MdnsProtocol {
         Ok(())
     }
 
-    pub fn request_queue(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
-        self.request_queue.clone()
+    pub fn take_req_rx(&self) -> Option<Receiver<(SocketAddr, Packet)>> {
+        self.req_rx.lock().unwrap().take()
     }
 
-    pub fn response_queue(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
-        self.response_queue.clone()
+    pub fn take_resp_rx(&self) -> Option<Receiver<(SocketAddr, Packet)>> {
+        self.resp_rx.lock().unwrap().take()
     }
 }

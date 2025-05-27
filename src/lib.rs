@@ -1,3 +1,6 @@
 pub mod mdns;
-mod parser;
+pub mod parser;
 mod protocol;
+
+pub type MdnsEndpoint = crate::parser::record::endpoint::EndpointAddr;
+pub type MdnsPacket = crate::parser::packet::Packet;

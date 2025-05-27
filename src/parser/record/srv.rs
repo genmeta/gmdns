@@ -25,7 +25,7 @@ impl Srv {
         self.port
     }
 
-    pub fn len(&self) -> usize {
+    pub fn encpding_size(&self) -> usize {
         6 + self.target.len()
     }
 

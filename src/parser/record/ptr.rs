@@ -6,7 +6,7 @@ use crate::parser::name::{Name, WriteName, be_name};
 pub struct Ptr(Name);
 
 impl Ptr {
-    pub fn len(&self) -> usize {
+    pub fn encpding_size(&self) -> usize {
         self.0.len()
     }
 }

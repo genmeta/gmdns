@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use qbase::net::EndpointAddr;
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tracing::{debug, warn};
 
@@ -14,9 +13,8 @@ use crate::{
     parser::{
         packet::Packet,
         record::{
-            self, Class,
-            RData::{self, E, E6, EE, EE6},
-            Type,
+            RData::{E, E6, EE, EE6},
+            endpoint::EndpointAddr,
         },
     },
     protocol::MdnsProtocol,
@@ -26,13 +24,13 @@ use crate::{
 pub struct Mdns {
     service_name: String,
     proto: MdnsProtocol,
-    hosts: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
+    hosts: Arc<Mutex<HashMap<String, Vec<EndpointAddr>>>>,
 }
 
 impl Mdns {
     pub fn new(service_name: String) -> io::Result<Self> {
         let proto = MdnsProtocol::new()?;
-        let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<SocketAddr>>::new()));
+        let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<EndpointAddr>>::new()));
         tokio::spawn({
             let proto = proto.clone();
             let service_name = service_name.clone();
@@ -52,7 +50,8 @@ impl Mdns {
             let hosts = hosts.clone();
             let service_name = service_name.clone();
             async move {
-                while let Some((_src, query)) = proto.request_queue().pop().await {
+                let mut req_rx = proto.take_req_rx().unwrap();
+                while let Some((_src, query)) = req_rx.recv().await {
                     if !query
                         .questions
                         .iter()
@@ -63,31 +62,8 @@ impl Mdns {
                         );
                         continue;
                     }
-                    let mut packet = Packet::reponse_with_id(query.header.id);
-                    let guard = hosts.lock().unwrap();
-                    guard.iter().for_each(|(name, addrs)| {
-                        addrs.iter().for_each(|addr| {
-                            let ep = record::e::E(EndpointAddr::direct(*addr));
-                            let (rtype, rdata) = match addr {
-                                SocketAddr::V4(_) => (Type::E, RData::E(ep)),
-                                SocketAddr::V6(_) => (Type::E6, RData::E6(ep)),
-                            };
-                            packet.add_response(name, rtype, Class::IN, 300, rdata);
-                        });
-                    });
+                    let packet = Packet::answer(query.header.id, &hosts.lock().unwrap());
                     let _ = proto.spwan_broadcast_packet(packet);
-                }
-            }
-        });
-
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        tokio::spawn({
-            let proto = proto.clone();
-            async move {
-                while let Some((src, packet)) = proto.response_queue().pop().await {
-                    tx.send((src, packet)).await.unwrap_or_else(|e| {
-                        warn!("[MDNS]: Failed to send response packet: {}", e);
-                    });
                 }
             }
         });
@@ -99,17 +75,27 @@ impl Mdns {
         })
     }
 
-    pub fn add_host(&mut self, host_name: String, host_addr: Vec<SocketAddr>) {
+    pub fn add_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
         let local_name = Self::local_name(self.service_name.clone(), host_name.clone());
         let mut guard = self.hosts.lock().unwrap();
         debug!(
             "[MDNS]: Adding host: {} with addresses: {:?}",
             local_name, host_addr
         );
-        guard.insert(local_name, host_addr);
+        let eps = host_addr
+            .into_iter()
+            .map(|addr| {
+                if addr.is_ipv6() {
+                    EndpointAddr::E6(addr)
+                } else {
+                    EndpointAddr::E(addr)
+                }
+            })
+            .collect::<Vec<_>>();
+        guard.insert(local_name, eps);
     }
 
-    pub async fn query(&mut self, domain: String) -> io::Result<Vec<EndpointAddr>> {
+    pub async fn query(&self, domain: String) -> io::Result<Vec<EndpointAddr>> {
         let local_name = Self::local_name(self.service_name.clone(), domain.clone());
         let packet = Packet::query_with_id(local_name.clone());
         let proto = self.proto.clone();
@@ -126,7 +112,7 @@ impl Mdns {
                     return None;
                 }
                 match answer.data {
-                    E(e) | EE(e) | E6(e) | EE6(e) => Some(e.endpoint()),
+                    E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
                     _ => {
                         debug!("Ignored record: {answer:?}");
                         None
@@ -147,7 +133,8 @@ impl Mdns {
         tokio::spawn({
             let proto = self.proto.clone();
             async move {
-                while let Some((src, packet)) = proto.response_queue().pop().await {
+                let mut resp_rx = proto.take_resp_rx().unwrap();
+                while let Some((src, packet)) = resp_rx.recv().await {
                     tx.send((src, packet)).await.unwrap_or_else(|e| {
                         warn!("[MDNS]: Failed to send response packet: {e}");
                     });
@@ -159,7 +146,7 @@ impl Mdns {
 
     fn local_name(service_name: String, name: String) -> String {
         name.split_once("genmeta.net")
-            .map(|(prefix, _)| format!("{}{}", prefix, service_name))
+            .map(|(prefix, _)| format!("{prefix}{service_name}"))
             .unwrap_or(name)
     }
 }

@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use bytes::BufMut;
-use e::{E, be_e};
+use endpoint::{EndpointAddr, WriteEndpointAddr, be_endpoint_addr};
 use nom::{
     Parser,
     bytes::streaming::take,
@@ -13,12 +13,9 @@ use srv::{Srv, WriteSrv, be_srv};
 use txt::Txt;
 
 use super::name::{Name, be_name};
-use crate::parser::{
-    name::WriteName,
-    record::{e::WriteE, ptr::WritePtr},
-};
+use crate::parser::{name::WriteName, record::ptr::WritePtr};
 
-pub mod e;
+pub mod endpoint;
 pub mod ptr;
 pub mod srv;
 pub mod txt;
@@ -54,6 +51,12 @@ pub struct ResourceRecord {
     pub(crate) cls: Class,
     pub(crate) ttl: u32,
     pub(crate) data: RData,
+}
+
+impl ResourceRecord {
+    pub fn data(&self) -> &RData {
+        &self.data
+    }
 }
 
 /// The CLASS value according to RFC 1035
@@ -169,26 +172,26 @@ pub enum RData {
     Txt(Txt),
     Srv(Srv),
     Ptr(Ptr),
-    E(E),
-    E6(E),
-    EE(E),
-    EE6(E),
+    E(EndpointAddr),
+    E6(EndpointAddr),
+    EE(EndpointAddr),
+    EE6(EndpointAddr),
     Unknown(),
 }
 
 impl RData {
-    pub fn len(&self) -> usize {
+    pub fn encpding_size(&self) -> usize {
         match self {
             RData::A(_ip) => 4,
             RData::Aaaa(_ip) => 16,
             RData::CName(name) => name.len(),
             RData::Txt(txt) => txt.len(),
-            RData::Srv(srv) => srv.len(),
-            RData::Ptr(ptr) => ptr.len(),
-            RData::E(e) => e.len(),
-            RData::E6(e) => e.len(),
-            RData::EE(e) => e.len(),
-            RData::EE6(e) => e.len(),
+            RData::Srv(srv) => srv.encpding_size(),
+            RData::Ptr(ptr) => ptr.encpding_size(),
+            RData::E(e) => e.encpding_size(),
+            RData::E6(e) => e.encpding_size(),
+            RData::EE(e) => e.encpding_size(),
+            RData::EE6(e) => e.encpding_size(),
             RData::Unknown() => 0,
         }
     }
@@ -232,10 +235,10 @@ fn be_rdata<'a>(
         }
         Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
         Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
-        Type::E => be_e(input).map(|(remain, e)| (remain, RData::E(e))),
-        Type::E6 => be_e(input).map(|(remain, e)| (remain, RData::E6(e))),
-        Type::EE => be_e(input).map(|(remain, e)| (remain, RData::EE(e))),
-        Type::EE6 => be_e(input).map(|(remain, e)| (remain, RData::EE6(e))),
+        Type::E => be_endpoint_addr(input, false, false).map(|(remain, e)| (remain, RData::E(e))),
+        Type::E6 => be_endpoint_addr(input, false, true).map(|(remain, e)| (remain, RData::E6(e))),
+        Type::EE => be_endpoint_addr(input, true, false).map(|(remain, e)| (remain, RData::EE(e))),
+        Type::EE6 => be_endpoint_addr(input, true, true).map(|(remain, e)| (remain, RData::EE6(e))),
         Type::Unimplemented(_) => Ok((input, RData::Unknown())),
     }
 }
@@ -254,7 +257,7 @@ impl<T: BufMut> WriteRecord for T {
         }
         self.put_u16(cls);
         self.put_u32(record.ttl);
-        self.put_u16(record.data.len() as u16);
+        self.put_u16(record.data.encpding_size() as u16);
         self.put_rdata(&record.data);
     }
 }
@@ -272,10 +275,10 @@ impl<T: BufMut> WriteRData for T {
             RData::Txt(txt) => self.put_slice(txt),
             RData::Srv(srv) => self.put_srv(srv),
             RData::Ptr(ptr) => self.put_ptr(ptr),
-            RData::E(e) => self.put_e(e),
-            RData::E6(e) => self.put_e(e),
-            RData::EE(e) => self.put_e(e),
-            RData::EE6(e) => self.put_e(e),
+            RData::E(e) => self.put_endpoint_addr(e),
+            RData::E6(e) => self.put_endpoint_addr(e),
+            RData::EE(e) => self.put_endpoint_addr(e),
+            RData::EE6(e) => self.put_endpoint_addr(e),
             RData::Unknown() => (),
         }
     }
