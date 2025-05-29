@@ -123,7 +123,7 @@ impl MdnsProtocol {
             }
         });
 
-        timeout(Duration::from_millis(500), query)
+        timeout(Duration::from_secs(1), query)
             .await
             .unwrap_or_else(|_| {
                 self.response_router.remove(&query_id);

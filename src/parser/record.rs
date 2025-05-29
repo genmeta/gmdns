@@ -57,6 +57,10 @@ impl ResourceRecord {
     pub fn data(&self) -> &RData {
         &self.data
     }
+
+    pub fn name(&self) -> Name {
+        self.name.clone()
+    }
 }
 
 /// The CLASS value according to RFC 1035
