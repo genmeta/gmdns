@@ -58,7 +58,7 @@ impl Mdns {
                         .iter()
                         .any(|q| q.name.contains(&service_name))
                     {
-                        debug!(
+                        tracing::trace!(
                             "[MDNS]: Received query {query:?} without service name: {service_name:?}",
                         );
                         continue;
@@ -104,11 +104,13 @@ impl Mdns {
         let local_name = Self::local_name(self.service_name.clone(), domain.clone());
         let packet = Packet::query_with_id(local_name.clone());
         let proto = self.proto.clone();
+        debug!("[MDNS]: Querying for: {local_name}");
         let (src, response) = proto.query(packet).await?;
         let mut endpoints = response
             .answers
             .into_iter()
             .filter_map(|answer| {
+                debug!("[MDNS]: recv response: {answer:?}");
                 if answer.name != local_name {
                     debug!(
                         "[MDNS]: Ignored answer for different service name: {} != {}",
@@ -128,6 +130,12 @@ impl Mdns {
 
         if let Some(pos) = endpoints.iter().position(|ep| ep.addr().ip() == src.ip()) {
             endpoints.swap(0, pos);
+        }
+        if endpoints.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No endpoint found for: {local_name}"),
+            ));
         }
 
         Ok(endpoints)

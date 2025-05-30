@@ -61,7 +61,6 @@ impl MdnsProtocol {
                         Ok((_, p)) => p,
                         Err(_) => continue,
                     };
-
                     match (packet.header.flags.query(), packet.header.id) {
                         (true, 0) => resp_tx.send((src, packet)).await.unwrap(),
                         (true, _) => {
