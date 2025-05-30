@@ -76,6 +76,10 @@ impl Mdns {
         })
     }
 
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+
     pub fn add_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
         let local_name = Self::local_name(self.service_name.clone(), host_name.clone());
         let mut guard = self.hosts.lock().unwrap();
