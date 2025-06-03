@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self},
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -53,17 +53,15 @@ impl Mdns {
             async move {
                 let mut req_rx = proto.take_req_rx().unwrap();
                 while let Some((_src, query)) = req_rx.recv().await {
-                    if !query
-                        .questions
-                        .iter()
-                        .any(|q| q.name.contains(&service_name))
-                    {
+                    let guard = hosts.lock().unwrap();
+                    let host_name = guard.keys().cloned().collect::<HashSet<_>>();
+                    if !query.questions.iter().any(|q| host_name.contains(&q.name)) {
                         tracing::trace!(
                             "[MDNS]: Received query {query:?} without service name: {service_name:?}",
                         );
                         continue;
                     }
-                    let packet = Packet::answer(query.header.id, &hosts.lock().unwrap());
+                    let packet = Packet::answer(query.header.id, &guard);
                     let _ = proto.spwan_broadcast_packet(packet);
                 }
             }

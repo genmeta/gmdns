@@ -43,7 +43,7 @@ impl MdnsProtocol {
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
-        socket.set_multicast_loop_v4(false)?;
+        socket.set_multicast_loop_v4(true)?;
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
