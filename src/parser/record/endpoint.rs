@@ -67,8 +67,8 @@ pub fn be_endpoint_addr(
     is_ipv6: bool,
 ) -> nom::IResult<&[u8], EndpointAddr> {
     if is_relay {
-        let (remain, agent) = be_socket_addr(input, is_ipv6)?;
-        let (remain, outer) = be_socket_addr(remain, is_ipv6)?;
+        let (remain, outer) = be_socket_addr(input, is_ipv6)?;
+        let (remain, agent) = be_socket_addr(remain, is_ipv6)?;
         if is_ipv6 {
             Ok((remain, EndpointAddr::EE6(outer, agent)))
         } else {

@@ -276,8 +276,8 @@ mod test {
                     parser::record::RData::A(*ipv4_addr),
                 ),
                 IpAddr::V6(ipv6_addr) => (
-                    parser::record::Type::Aaaa,
-                    parser::record::RData::Aaaa(*ipv6_addr),
+                    parser::record::Type::AAAA,
+                    parser::record::RData::AAAA(*ipv6_addr),
                 ),
             };
             response.add_answer("example.com", rtype, parser::record::Class::IN, 300, rdata);
