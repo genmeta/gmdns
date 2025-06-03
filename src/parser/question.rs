@@ -30,7 +30,8 @@ pub enum QueryType {
     /// a host addresss
     A,
     /// IPv6 host address (RFC 2782)
-    Aaaa,
+    #[allow(clippy::upper_case_acronyms)]
+    AAAA,
     /// the canonical name for an alias
     Cname,
     /// text strings
@@ -56,7 +57,7 @@ impl QueryType {
     pub fn from_u16(value: u16) -> Self {
         match value {
             1 => Self::A,
-            28 => Self::Aaaa,
+            28 => Self::AAAA,
             5 => Self::Cname,
             16 => Self::Txt,
             33 => Self::Srv,
@@ -71,7 +72,7 @@ impl QueryType {
     pub fn to_u16(&self) -> u16 {
         match self {
             Self::A => 1,
-            Self::Aaaa => 28,
+            Self::AAAA => 28,
             Self::Cname => 5,
             Self::Txt => 16,
             Self::Srv => 33,

@@ -110,7 +110,8 @@ pub enum Type {
     /// 2 an authoritative name server
     Ns,
     /// 28 IPv6 host address (RFC 2782)
-    Aaaa,
+    #[allow(clippy::upper_case_acronyms)]
+    AAAA,
     /// 5 the canonical name for an alias
     Cname,
     /// 16 text strings
@@ -137,7 +138,7 @@ impl Type {
         match value {
             1 => Self::A,
             2 => Self::Ns,
-            28 => Self::Aaaa,
+            28 => Self::AAAA,
             5 => Self::Cname,
             16 => Self::Txt,
             33 => Self::Srv,
@@ -154,7 +155,7 @@ impl Type {
         match self {
             Self::A => 1,
             Self::Ns => 2,
-            Self::Aaaa => 28,
+            Self::AAAA => 28,
             Self::Cname => 5,
             Self::Txt => 16,
             Self::Srv => 33,
@@ -171,7 +172,7 @@ impl Type {
 #[derive(Debug)]
 pub enum RData {
     A(Ipv4Addr),
-    Aaaa(Ipv6Addr),
+    AAAA(Ipv6Addr),
     CName(Name),
     Txt(Txt),
     Srv(Srv),
@@ -187,7 +188,7 @@ impl RData {
     pub fn encpding_size(&self) -> usize {
         match self {
             RData::A(_ip) => 4,
-            RData::Aaaa(_ip) => 16,
+            RData::AAAA(_ip) => 16,
             RData::CName(name) => name.len(),
             RData::Txt(txt) => txt.len(),
             RData::Srv(srv) => srv.encpding_size(),
@@ -230,7 +231,7 @@ fn be_rdata<'a>(
 ) -> nom::IResult<&'a [u8], RData> {
     match typ {
         Type::A => map(be_u32, |ip| RData::A(Ipv4Addr::from(ip))).parse(input),
-        Type::Aaaa => map(be_u128, |ip| RData::Aaaa(Ipv6Addr::from(ip))).parse(input),
+        Type::AAAA => map(be_u128, |ip| RData::AAAA(Ipv6Addr::from(ip))).parse(input),
         Type::Cname => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
         Type::Txt => map(take(rdlen), |txt: &[u8]| RData::Txt(Txt::new(txt.to_vec()))).parse(input),
         Type::Srv => {
@@ -274,7 +275,7 @@ impl<T: BufMut> WriteRData for T {
     fn put_rdata(&mut self, rdata: &RData) {
         match rdata {
             RData::A(ip) => self.put_slice(&ip.octets()),
-            RData::Aaaa(ip) => self.put_slice(&ip.octets()),
+            RData::AAAA(ip) => self.put_slice(&ip.octets()),
             RData::CName(name) => self.put_name(name),
             RData::Txt(txt) => self.put_slice(txt),
             RData::Srv(srv) => self.put_srv(srv),
