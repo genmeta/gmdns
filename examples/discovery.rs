@@ -1,7 +1,7 @@
-use std::{io::Error, net::SocketAddr};
+use std::{io::Error, net::SocketAddr, time::Duration};
 
 use clap::Parser;
-use tokio_stream::StreamExt;
+use tokio_stream::StreamExt as _;
 
 const SERVICE_NAME: &str = "_genmeta.local";
 
@@ -27,10 +27,11 @@ async fn main() -> Result<(), Error> {
     );
 
     mdns.add_host(
-        "test2.genmeta.net".to_string(),
+        "ljsy.test.genmeta.net".to_string(),
         vec!["192.168.1.7:7001".parse().unwrap()],
     );
 
+    tokio::time::sleep(Duration::from_secs(100)).await;
     let mut stream = mdns.discover();
     while let Some((addr, packet)) = stream.next().await {
         println!("Received packet from {addr}: {packet:?}");

@@ -17,5 +17,9 @@ dashmap = "6"
 rand = "0.9"
 
 [[example]]
-name = "mdns"
-path = "examples/mdns.rs"
+name = "query"
+path = "examples/query.rs"
+
+[[example]]
+name = "discover"
+path = "examples/discover.rs"

@@ -49,18 +49,16 @@ impl Mdns {
         tokio::spawn({
             let proto = proto.clone();
             let hosts = hosts.clone();
-            let service_name = service_name.clone();
             async move {
                 let mut req_rx = proto.take_req_rx().unwrap();
                 while let Some((_src, query)) = req_rx.recv().await {
                     let guard = hosts.lock().unwrap();
                     let host_name = guard.keys().cloned().collect::<HashSet<_>>();
-                    if !query.questions.iter().any(|q| host_name.contains(&q.name)) {
-                        tracing::trace!(
-                            "[MDNS]: Received query {query:?} without service name: {service_name:?}",
-                        );
-                        continue;
-                    }
+                    tracing::debug!(
+                        "[MDNS]: Received query : host {host_name:?} query {:?} src {:?}",
+                        query.questions[0].name,
+                        _src,
+                    );
                     let packet = Packet::answer(query.header.id, &guard);
                     let _ = proto.spwan_broadcast_packet(packet);
                 }
@@ -102,7 +100,7 @@ impl Mdns {
         let local_name = Self::local_name(self.service_name.clone(), domain.clone());
         let packet = Packet::query_with_id(local_name.clone());
         let proto = self.proto.clone();
-        debug!("[MDNS]: Querying for: {local_name}");
+        tracing::info!("[MDNS]: Querying for: {local_name}");
         let (src, response) = proto.query(packet).await?;
         let mut endpoints = response
             .answers
@@ -132,10 +130,10 @@ impl Mdns {
         if endpoints.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("No endpoint found for: {local_name}"),
+                format!("No endpoint found for: {domain}"),
             ));
         }
-
+        tracing::info!("[MDNS]: Found endpoints: {endpoints:?} for {domain}");
         Ok(endpoints)
     }
 
