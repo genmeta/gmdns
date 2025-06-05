@@ -1,36 +1,31 @@
 use std::{
-    future::poll_fn,
     io::{self},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
-    task::{Poll, Waker},
+    sync::Arc,
     time::Duration,
 };
 
 use bytes::BytesMut;
 use dashmap::DashMap;
 use socket2::{Domain, Socket, Type};
-use tokio::{net::UdpSocket, sync::mpsc::Receiver, time::timeout};
+use tokio::{net::UdpSocket, time::timeout};
 use tracing::debug;
 
-use crate::parser::packet::{Packet, WritePacket, be_packet};
+use crate::{
+    async_deque::ArcAsyncDeque,
+    parser::packet::{Packet, WritePacket, be_packet},
+};
 
 const MULTICAST_PORT: u16 = 5353;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
-
-enum Reponse {
-    Demand(Waker),
-    Answer((SocketAddr, Packet)),
-}
-
-type ArcReceiver<T> = Arc<Mutex<Option<Receiver<T>>>>;
+const MAX_DEQUE_SIZE: usize = 64;
 
 #[derive(Clone)]
 pub struct MdnsProtocol {
     io: Arc<UdpSocket>,
-    req_rx: ArcReceiver<(SocketAddr, Packet)>,
-    resp_rx: ArcReceiver<(SocketAddr, Packet)>,
-    response_router: Arc<DashMap<u16, Reponse>>,
+    req_deque: ArcAsyncDeque<(SocketAddr, Packet)>,
+    resp_deque: ArcAsyncDeque<(SocketAddr, Packet)>,
+    response_router: Arc<DashMap<u16, ArcAsyncDeque<(SocketAddr, Packet)>>>,
 }
 
 impl MdnsProtocol {
@@ -47,11 +42,14 @@ impl MdnsProtocol {
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
-        let (req_tx, req_rx) = tokio::sync::mpsc::channel(64);
-        let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(64);
-        let response_router = Arc::new(DashMap::<u16, Reponse>::new());
+        let req_deque = ArcAsyncDeque::new();
+        let resp_deque = ArcAsyncDeque::new();
+        let response_router = Arc::new(DashMap::<u16, ArcAsyncDeque<(SocketAddr, Packet)>>::new());
+
         let _rcvd_task = {
             let response_router = response_router.clone();
+            let req_deque = req_deque.clone();
+            let resp_deque = resp_deque.clone();
             let io = io.clone();
             tokio::spawn(async move {
                 loop {
@@ -62,25 +60,14 @@ impl MdnsProtocol {
                         Err(_) => continue,
                     };
                     match (packet.header.flags.query(), packet.header.id) {
-                        (true, 0) => resp_tx.send((src, packet)).await.unwrap(),
+                        (true, 0) => Self::push_to_deque(&resp_deque, src, packet),
                         (true, _) => {
-                            let waker = match response_router.entry(packet.header.id) {
-                                dashmap::Entry::Occupied(mut entry) => {
-                                    match entry.insert(Reponse::Answer((src, packet))) {
-                                        Reponse::Demand(waker) => Some(waker),
-                                        _ => None,
-                                    }
-                                }
-                                dashmap::Entry::Vacant(_) => {
-                                    debug!("Response not found for ID: {}", packet.header.id);
-                                    None
-                                }
-                            };
-                            if let Some(w) = waker {
-                                w.wake()
+                            if let Some((_id, pending)) = response_router.remove(&packet.header.id)
+                            {
+                                Self::push_to_deque(&pending, src, packet);
                             }
                         }
-                        (false, _) => req_tx.send((src, packet)).await.unwrap(),
+                        (false, _) => Self::push_to_deque(&req_deque, src, packet),
                     }
                 }
             })
@@ -88,8 +75,8 @@ impl MdnsProtocol {
         .abort_handle();
         Ok(Self {
             io,
-            req_rx: Arc::new(Mutex::new(Some(req_rx))),
-            resp_rx: Arc::new(Mutex::new(Some(resp_rx))),
+            req_deque,
+            resp_deque,
             response_router,
         })
     }
@@ -100,34 +87,20 @@ impl MdnsProtocol {
             return Err(io::Error::other("query id should not be 0"));
         }
         self.spwan_broadcast_packet(packet)?;
-        let query = poll_fn(|cx| match self.response_router.entry(query_id) {
-            dashmap::Entry::Occupied(mut entry) => {
-                if let Reponse::Demand(waker) = entry.get() {
-                    if !waker.will_wake(cx.waker()) {
-                        Poll::Ready(Err(io::Error::other("query id duplicated")))
-                    } else {
-                        entry.insert(Reponse::Demand(cx.waker().clone()));
-                        Poll::Pending
-                    }
-                } else {
-                    let Reponse::Answer(answer) = entry.remove() else {
-                        unreachable!()
-                    };
-                    Poll::Ready(Ok(answer))
-                }
-            }
-            dashmap::Entry::Vacant(entry) => {
-                entry.insert(Reponse::Demand(cx.waker().clone()));
-                Poll::Pending
-            }
-        });
+        let pending_response = ArcAsyncDeque::new();
+        self.response_router
+            .insert(query_id, pending_response.clone());
 
-        timeout(Duration::from_secs(1), query)
-            .await
-            .unwrap_or_else(|_| {
+        match timeout(Duration::from_secs(1), pending_response.pop()).await {
+            Ok(Some((src, packet))) => {
+                self.response_router.remove(&query_id);
+                Ok((src, packet))
+            }
+            _ => {
                 self.response_router.remove(&query_id);
                 Err(io::Error::new(io::ErrorKind::TimedOut, "Query timed out"))
-            })
+            }
+        }
     }
 
     pub fn spwan_broadcast_packet(&self, packet: Packet) -> io::Result<()> {
@@ -143,11 +116,19 @@ impl MdnsProtocol {
         Ok(())
     }
 
-    pub fn take_req_rx(&self) -> Option<Receiver<(SocketAddr, Packet)>> {
-        self.req_rx.lock().unwrap().take()
+    pub fn resp_queue(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
+        self.resp_deque.clone()
     }
 
-    pub fn take_resp_rx(&self) -> Option<Receiver<(SocketAddr, Packet)>> {
-        self.resp_rx.lock().unwrap().take()
+    pub fn req_deque(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
+        self.req_deque.clone()
+    }
+
+    fn push_to_deque(deque: &ArcAsyncDeque<(SocketAddr, Packet)>, src: SocketAddr, packet: Packet) {
+        deque.push_back((src, packet));
+        if deque.len() > MAX_DEQUE_SIZE {
+            debug!("[Mdns] recv deque overflow, pop front");
+            tokio::spawn(deque.pop());
+        }
     }
 }

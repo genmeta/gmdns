@@ -1,4 +1,4 @@
-use std::{io::Error, net::SocketAddr, time::Duration};
+use std::{io::Error, net::SocketAddr};
 
 use clap::Parser;
 use tokio_stream::StreamExt as _;
@@ -27,11 +27,10 @@ async fn main() -> Result<(), Error> {
     );
 
     mdns.add_host(
-        "ljsy.test.genmeta.net".to_string(),
+        "mdns.test.genmeta.net".to_string(),
         vec!["192.168.1.7:7001".parse().unwrap()],
     );
 
-    tokio::time::sleep(Duration::from_secs(100)).await;
     let mut stream = mdns.discover();
     while let Some((addr, packet)) = stream.next().await {
         println!("Received packet from {addr}: {packet:?}");

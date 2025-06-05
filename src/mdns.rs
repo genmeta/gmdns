@@ -50,8 +50,8 @@ impl Mdns {
             let proto = proto.clone();
             let hosts = hosts.clone();
             async move {
-                let mut req_rx = proto.take_req_rx().unwrap();
-                while let Some((_src, query)) = req_rx.recv().await {
+                let req_rx = proto.req_deque();
+                while let Some((_src, query)) = req_rx.pop().await {
                     let guard = hosts.lock().unwrap();
                     let host_name = guard.keys().cloned().collect::<HashSet<_>>();
                     tracing::debug!(
@@ -139,11 +139,11 @@ impl Mdns {
 
     pub fn discover(&mut self) -> impl Stream<Item = (SocketAddr, Packet)> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let proto = self.proto.clone();
         tokio::spawn({
-            let proto = self.proto.clone();
             async move {
-                let mut resp_rx = proto.take_resp_rx().unwrap();
-                while let Some((src, packet)) = resp_rx.recv().await {
+                let resp_deque = proto.resp_queue();
+                while let Some((src, packet)) = resp_deque.pop().await {
                     tx.send((src, packet)).await.unwrap_or_else(|e| {
                         warn!("[MDNS]: Failed to send response packet: {e}");
                     });
