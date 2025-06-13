@@ -28,9 +28,9 @@ pub struct Mdns {
 }
 
 impl Mdns {
-    pub fn new(service_name: &str) -> io::Result<Self> {
+    pub fn new(service_name: &str, device: Option<&str>) -> io::Result<Self> {
         let service_name = service_name.to_string();
-        let proto = MdnsProtocol::new()?;
+        let proto = MdnsProtocol::new(device)?;
         let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<EndpointAddr>>::new()));
         tokio::spawn({
             let proto = proto.clone();
