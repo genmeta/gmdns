@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::{
+    fmt::Display,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use bytes::BufMut;
 use endpoint::{EndpointAddr, WriteEndpointAddr, be_endpoint_addr};
@@ -182,6 +185,21 @@ pub enum RData {
     EE(EndpointAddr),
     EE6(EndpointAddr),
     Unknown(),
+}
+
+impl Display for RData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RData::A(ip) => write!(f, "A({})", ip),
+            RData::AAAA(ip) => write!(f, "AAAA({})", ip),
+            RData::CName(name) => write!(f, "CName({})", name),
+            RData::Txt(txt) => write!(f, "Txt({:?})", txt),
+            RData::Srv(srv) => write!(f, "Srv({:?})", srv),
+            RData::Ptr(ptr) => write!(f, "Ptr({:?})", ptr),
+            RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => write!(f, "{e}"),
+            RData::Unknown() => write!(f, "Unknown"),
+        }
+    }
 }
 
 impl RData {

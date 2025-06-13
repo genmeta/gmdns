@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    fmt::Display,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+};
 
 use bytes::BufMut;
 use nom::{
@@ -6,7 +9,6 @@ use nom::{
     combinator::{flat_map, map},
     number::streaming::{be_u16, be_u32, be_u128},
 };
-
 /// EndpointAddress record
 /// E: IPv4 Direct address
 /// EE: IPv4 Relay address
@@ -109,5 +111,16 @@ pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
     move |input| match is_v6 {
         true => map(be_u128, |ip| IpAddr::V6(Ipv6Addr::from(ip))).parse(input),
         false => map(be_u32, |ip| IpAddr::V4(Ipv4Addr::from(ip))).parse(input),
+    }
+}
+
+impl Display for EndpointAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointAddr::E(addr) => write!(f, "{addr}"),
+            EndpointAddr::EE(outer, agent) => write!(f, "{outer}-{agent}"),
+            EndpointAddr::E6(addr) => write!(f, "{addr}"),
+            EndpointAddr::EE6(outer, agent) => write!(f, "{outer}-{agent}"),
+        }
     }
 }
