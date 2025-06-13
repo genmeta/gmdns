@@ -9,7 +9,6 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use socket2::{Domain, Socket, Type};
 use tokio::{net::UdpSocket, time::timeout};
-use tracing::debug;
 
 use crate::{
     async_deque::ArcAsyncDeque,
@@ -29,7 +28,7 @@ pub struct MdnsProtocol {
 }
 
 impl MdnsProtocol {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(device: Option<&str>) -> io::Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -40,6 +39,11 @@ impl MdnsProtocol {
         socket.bind(&bind.into())?;
         socket.set_multicast_loop_v4(false)?;
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
+        if let Some(_device) = device {
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            socket.bind_device(Some(_device.as_bytes()));
+        }
+
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
         let req_deque = ArcAsyncDeque::new();
@@ -127,7 +131,6 @@ impl MdnsProtocol {
     fn push_to_deque(deque: &ArcAsyncDeque<(SocketAddr, Packet)>, src: SocketAddr, packet: Packet) {
         deque.push_back((src, packet));
         if deque.len() > MAX_DEQUE_SIZE {
-            debug!("[Mdns] recv deque overflow, pop front");
             tokio::spawn(deque.pop());
         }
     }
