@@ -1,5 +1,6 @@
 use bytes::BufMut;
 use nom::number::streaming::be_u16;
+use tokio::io;
 
 use super::name::{Name, be_name};
 use crate::parser::name::WriteName;
@@ -25,7 +26,7 @@ pub struct Question {
     pub(crate) qclass: QueryClass,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum QueryType {
     /// a host addresss
     A,
@@ -49,13 +50,13 @@ pub enum QueryType {
     EE,
     /// 269 a ipv6 relay endpoint,
     EE6,
-    /// Unimplemented record type
-    Unimplemented(u16),
 }
 
-impl QueryType {
-    pub fn from_u16(value: u16) -> Self {
-        match value {
+impl TryFrom<u16> for QueryType {
+    type Error = io::Error;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        let query = match value {
             1 => Self::A,
             28 => Self::AAAA,
             5 => Self::Cname,
@@ -66,22 +67,30 @@ impl QueryType {
             267 => Self::E6,
             268 => Self::EE,
             269 => Self::EE6,
-            _ => Self::Unimplemented(value),
-        }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Unknown query type {}", value),
+                ));
+            }
+        };
+        Ok(query)
     }
-    pub fn to_u16(&self) -> u16 {
-        match self {
-            Self::A => 1,
-            Self::AAAA => 28,
-            Self::Cname => 5,
-            Self::Txt => 16,
-            Self::Srv => 33,
-            Self::Ptr => 12,
-            Self::E => 266,
-            Self::E6 => 267,
-            Self::EE => 268,
-            Self::EE6 => 269,
-            Self::Unimplemented(value) => *value,
+}
+
+impl From<QueryType> for u16 {
+    fn from(value: QueryType) -> Self {
+        match value {
+            QueryType::A => 1,
+            QueryType::AAAA => 28,
+            QueryType::Cname => 5,
+            QueryType::Txt => 16,
+            QueryType::Srv => 33,
+            QueryType::Ptr => 12,
+            QueryType::E => 266,
+            QueryType::E6 => 267,
+            QueryType::EE => 268,
+            QueryType::EE6 => 269,
         }
     }
 }
@@ -102,27 +111,36 @@ pub enum QueryClass {
     Any = 255,
 }
 
-impl QueryClass {
-    pub fn from_u16(value: u16) -> Self {
-        let value = value & 0x7FFF; // Mask to 15 bits
-        match value {
+impl From<QueryClass> for u16 {
+    fn from(query: QueryClass) -> u16 {
+        match query {
+            QueryClass::IN => 1,
+            QueryClass::CS => 2,
+            QueryClass::CH => 3,
+            QueryClass::HS => 4,
+            QueryClass::Any => 255,
+        }
+    }
+}
+
+impl TryFrom<u16> for QueryClass {
+    type Error = io::Error;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        let query = match value {
             1 => Self::IN,
             2 => Self::CS,
             3 => Self::CH,
             4 => Self::HS,
             255 => Self::Any,
-            _ => panic!("Unknown class {value}"),
-        }
-    }
-
-    pub fn to_u16(self) -> u16 {
-        match self {
-            Self::IN => 1,
-            Self::CS => 2,
-            Self::CH => 3,
-            Self::HS => 4,
-            Self::Any => 255,
-        }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Unknown query class {}", value),
+                ));
+            }
+        };
+        Ok(query)
     }
 }
 
@@ -131,13 +149,27 @@ pub fn be_question<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u
     let (remain, qtype) = be_u16(remain)?;
     let (remain, qclass) = be_u16(remain)?;
 
+    let Ok(qtype) = QueryType::try_from(qtype) else {
+        return Err(nom::Err::Error(nom::error::make_error(
+            input,
+            nom::error::ErrorKind::Alt,
+        )));
+    };
+    let prefer_unicast = qclass & 0x8000 == 0x8000;
+
+    let Ok(qclass) = QueryClass::try_from(qclass) else {
+        return Err(nom::Err::Error(nom::error::make_error(
+            input,
+            nom::error::ErrorKind::Alt,
+        )));
+    };
     Ok((
         remain,
         Question {
             name,
-            prefer_unicast: qclass & 0x8000 == 0x8000,
-            qtype: QueryType::from_u16(qtype),
-            qclass: QueryClass::from_u16(qclass),
+            prefer_unicast,
+            qtype,
+            qclass,
         },
     ))
 }
@@ -149,8 +181,8 @@ pub trait WriteQuestion {
 impl<T: BufMut> WriteQuestion for T {
     fn put_question(&mut self, question: &Question) {
         self.put_name(&question.name);
-        self.put_u16(question.qtype.to_u16());
-        let mut qclass = question.qclass.to_u16();
+        self.put_u16(question.qtype.into());
+        let mut qclass = question.qclass.into();
         if question.prefer_unicast {
             qclass |= 0x8000;
         }

@@ -111,7 +111,7 @@ impl MdnsProtocol {
         tokio::spawn({
             let io = self.io.clone();
             async move {
-                let mut buf = BytesMut::with_capacity(512);
+                let mut buf = BytesMut::with_capacity(1024);
                 buf.put_packet(&packet);
                 io.send_to(buf.as_ref(), (MULTICAST_ADDR, MULTICAST_PORT))
                     .await

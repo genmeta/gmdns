@@ -146,7 +146,7 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
+    /// use gmdns::async_deque::ArcAsyncDeque;
     ///
     /// let mut deque = ArcAsyncDeque::new();
     /// deque.push_front(1);
@@ -163,7 +163,7 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
+    /// use gmdns::async_deque::ArcAsyncDeque;
     ///
     /// let mut deque = ArcAsyncDeque::new();
     /// deque.push_back(1);
@@ -185,7 +185,7 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
+    /// use gmdns::async_deque::ArcAsyncDeque;
     ///
     /// #[tokio::test]
     /// async fn test() {
@@ -216,7 +216,7 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
+    /// use gmdns::async_deque::ArcAsyncDeque;
     /// use futures::task::{Poll, noop_waker};
     ///
     /// let waker = noop_waker();
@@ -242,7 +242,7 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
+    /// use gmdns::async_deque::ArcAsyncDeque;
     ///
     /// let mut deque = ArcAsyncDeque::new();
     /// assert!(deque.is_empty());
@@ -263,8 +263,6 @@ impl<T> ArcAsyncDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// use qbase::util::ArcAsyncDeque;
-    ///
     /// #[tokio::test]
     /// async fn test() {
     ///    let mut deque = ArcAsyncDeque::new();
