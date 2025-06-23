@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use bytes::BufMut;
-use nom::Parser;
 
 use super::{
     header::{Header, be_header},
@@ -94,29 +93,15 @@ impl Packet {
 pub fn be_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
     let (remain, header) = be_header(input)?;
 
-    let (remain, questions) = nom::multi::count(
-        |remain| be_question(remain, input),
-        header.questions_count as usize,
-    )
-    .parse(remain)?;
+    let (remain, questions) =
+        parse::<Question>(remain, input, header.questions_count, be_question)?;
+    let (remain, answers) =
+        parse::<ResourceRecord>(remain, input, header.answers_count, be_record)?;
+    let (remain, nameservers) =
+        parse::<ResourceRecord>(remain, input, header.nameservers_count, be_record)?;
+    let (remain, additional) =
+        parse::<ResourceRecord>(remain, input, header.additional_count, be_record)?;
 
-    let (remain, answers) = nom::multi::count(
-        |remain| be_record(remain, input),
-        header.answers_count as usize,
-    )
-    .parse(remain)?;
-
-    let (remain, nameservers) = nom::multi::count(
-        |remain| be_record(remain, input),
-        header.nameservers_count as usize,
-    )
-    .parse(remain)?;
-
-    let (remain, additional) = nom::multi::count(
-        |remain| be_record(remain, input),
-        header.additional_count as usize,
-    )
-    .parse(remain)?;
     Ok((
         remain,
         Packet {
@@ -127,6 +112,30 @@ pub fn be_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
             additional,
         },
     ))
+}
+
+fn parse<'a, T>(
+    mut input: &'a [u8],
+    original: &'a [u8],
+    count: u16,
+    parser: impl Fn(&'a [u8], &'a [u8]) -> nom::IResult<&'a [u8], T>,
+) -> nom::IResult<&'a [u8], Vec<T>> {
+    let mut records = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        match parser(input, original) {
+            Ok((new_input, record)) => {
+                records.push(record);
+                input = new_input;
+            }
+            Err(nom::Err::Error(nom::error::Error {
+                input: remaining, ..
+            })) => {
+                input = remaining;
+            }
+            _ => break,
+        }
+    }
+    Ok((input, records))
 }
 
 pub trait WritePacket {

@@ -151,15 +151,16 @@ pub fn be_question<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u
 
     let Ok(qtype) = QueryType::try_from(qtype) else {
         return Err(nom::Err::Error(nom::error::make_error(
-            input,
+            remain,
             nom::error::ErrorKind::Alt,
         )));
     };
     let prefer_unicast = qclass & 0x8000 == 0x8000;
 
     let Ok(qclass) = QueryClass::try_from(qclass) else {
+        tracing::debug!("unkown query class: {qclass}");
         return Err(nom::Err::Error(nom::error::make_error(
-            input,
+            remain,
             nom::error::ErrorKind::Alt,
         )));
     };

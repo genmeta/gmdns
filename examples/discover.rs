@@ -28,7 +28,11 @@ async fn main() -> Result<(), Error> {
 
     mdns.add_host(
         "mdns.test.genmeta.net".to_string(),
-        vec!["192.168.1.7:7001".parse().unwrap()],
+        vec![
+            "192.168.1.7:7001".parse().unwrap(),
+            "192.168.1.7:7001".parse().unwrap(),
+            "192.168.1.7:7001".parse().unwrap(),
+        ],
     );
 
     let mut stream = mdns.discover();

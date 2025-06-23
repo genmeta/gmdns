@@ -3,7 +3,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
 };
 
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
 use endpoint::{EndpointAddr, WriteEndpointAddr, be_endpoint_addr};
 use nom::{
     Parser,
@@ -191,7 +191,7 @@ impl From<Type> for u16 {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum RData {
     A(Ipv4Addr),
     AAAA(Ipv6Addr),
@@ -208,12 +208,12 @@ pub enum RData {
 impl Display for RData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RData::A(ip) => write!(f, "A({ip})"),
-            RData::AAAA(ip) => write!(f, "AAAA({ip})"),
+            RData::A(ip) => write!(f, "{ip}"),
+            RData::AAAA(ip) => write!(f, "{ip}"),
             RData::CName(name) => write!(f, "CName({name})"),
-            RData::Txt(txt) => write!(f, "Txt({txt:?})"),
-            RData::Srv(srv) => write!(f, "Srv({srv:?})"),
-            RData::Ptr(ptr) => write!(f, "Ptr({ptr:?})"),
+            RData::Txt(txt) => write!(f, "{txt:?})"),
+            RData::Srv(srv) => write!(f, "{srv:?}"),
+            RData::Ptr(ptr) => write!(f, "{ptr:?}"),
             RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => write!(f, "{e}"),
         }
     }
@@ -241,20 +241,34 @@ pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8]
     let (remain, typ) = be_u16(remain)?;
     let (remain, cls) = be_u16(remain)?;
     let (remain, ttl) = be_u32(remain)?;
-    let (remain, rdlen) = be_u16(remain)?;
+    let (mut remain, rdlen) = be_u16(remain)?;
 
     let Ok(typ) = Type::try_from(typ) else {
+        tracing::warn!("unkown record type: {typ} skip record");
+        if remain.len() < rdlen as usize {
+            return Err(nom::Err::Incomplete(nom::Needed::new(
+                rdlen as usize - remain.len(),
+            )));
+        }
+        remain.advance(rdlen as usize);
         return Err(nom::Err::Error(nom::error::make_error(
-            input,
+            remain,
             nom::error::ErrorKind::Alt,
         )));
     };
-    let (remain, rdata) = be_rdata(remain, origin, typ, rdlen)?;
+    let (mut remain, rdata) = be_rdata(remain, origin, typ, rdlen)?;
 
     let multicast_unique = cls & 0x8000 != 0;
     let Ok(cls) = Class::try_from(cls) else {
+        tracing::warn!("unkown class type: {cls}");
+        if remain.len() < rdlen as usize {
+            return Err(nom::Err::Incomplete(nom::Needed::new(
+                rdlen as usize - remain.len(),
+            )));
+        }
+        remain.advance(rdlen as usize);
         return Err(nom::Err::Error(nom::error::make_error(
-            input,
+            remain,
             nom::error::ErrorKind::Alt,
         )));
     };
