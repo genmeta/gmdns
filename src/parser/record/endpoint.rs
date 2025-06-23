@@ -14,7 +14,7 @@ use nom::{
 /// EE: IPv4 Relay address
 /// E6: IPv6  Direct address
 /// EE6: IPv6  Relay address
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
     E(SocketAddr),
     EE(SocketAddr, SocketAddr),

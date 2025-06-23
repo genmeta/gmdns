@@ -44,7 +44,7 @@ pub mod txt;
 /// /                                               /
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 /// '''
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ResourceRecord {
     pub(crate) name: Name,
     pub(crate) typ: Type,
@@ -68,7 +68,7 @@ impl ResourceRecord {
 }
 
 /// The CLASS value according to RFC 1035
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Class {
     /// the Internet
     IN = 1,
@@ -94,7 +94,7 @@ impl TryFrom<u16> for Class {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Unknown record class: {}", value),
+                    format!("Unknown record class: {value}"),
                 ));
             }
         };
@@ -117,7 +117,7 @@ impl From<Class> for u16 {
 ///
 /// All "EXPERIMENTAL" markers here are from the RFC
 /// See https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Type {
     /// 1 a host addresss
     A,
@@ -165,7 +165,7 @@ impl TryFrom<u16> for Type {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Unknown record type: {}", value),
+                    format!("Unknown record type: {value}"),
                 ));
             }
         };
@@ -191,7 +191,7 @@ impl From<Type> for u16 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum RData {
     A(Ipv4Addr),
     AAAA(Ipv6Addr),
@@ -208,12 +208,12 @@ pub enum RData {
 impl Display for RData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RData::A(ip) => write!(f, "A({})", ip),
-            RData::AAAA(ip) => write!(f, "AAAA({})", ip),
-            RData::CName(name) => write!(f, "CName({})", name),
-            RData::Txt(txt) => write!(f, "Txt({:?})", txt),
-            RData::Srv(srv) => write!(f, "Srv({:?})", srv),
-            RData::Ptr(ptr) => write!(f, "Ptr({:?})", ptr),
+            RData::A(ip) => write!(f, "A({ip})"),
+            RData::AAAA(ip) => write!(f, "AAAA({ip})"),
+            RData::CName(name) => write!(f, "CName({name})"),
+            RData::Txt(txt) => write!(f, "Txt({txt:?})"),
+            RData::Srv(srv) => write!(f, "Srv({srv:?})"),
+            RData::Ptr(ptr) => write!(f, "Ptr({ptr:?})"),
             RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => write!(f, "{e}"),
         }
     }

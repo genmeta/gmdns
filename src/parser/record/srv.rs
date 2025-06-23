@@ -3,7 +3,7 @@ use nom::number::streaming::be_u16;
 
 use crate::parser::name::{Name, WriteName, be_name};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Srv {
     priority: u16,
     weight: u16,

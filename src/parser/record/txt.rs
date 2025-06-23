@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Txt {
     bytes: Vec<u8>,
 }

@@ -2,7 +2,7 @@ use bytes::BufMut;
 
 use crate::parser::name::{Name, WriteName, be_name};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Ptr(Name);
 
 impl Ptr {

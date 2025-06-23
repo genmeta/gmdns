@@ -70,7 +70,7 @@ impl TryFrom<u16> for QueryType {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Unknown query type {}", value),
+                    format!("Unknown query type {value}"),
                 ));
             }
         };
@@ -136,7 +136,7 @@ impl TryFrom<u16> for QueryClass {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Unknown query class {}", value),
+                    format!("Unknown query class {value}"),
                 ));
             }
         };
