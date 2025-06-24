@@ -18,7 +18,7 @@ use crate::parser::name::WriteName;
 /// |                     QCLASS                    |
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 /// ``
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Question {
     pub(crate) name: Name,
     pub(crate) prefer_unicast: bool,
@@ -156,9 +156,9 @@ pub fn be_question<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u
         )));
     };
     let prefer_unicast = qclass & 0x8000 == 0x8000;
+    let qclass = qclass & 0x7FFF;
 
     let Ok(qclass) = QueryClass::try_from(qclass) else {
-        tracing::debug!("unkown query class: {qclass}");
         return Err(nom::Err::Error(nom::error::make_error(
             remain,
             nom::error::ErrorKind::Alt,

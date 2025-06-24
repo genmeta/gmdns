@@ -14,7 +14,7 @@ use crate::parser::{
 };
 
 /// Parsed DNS packet
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Packet {
     pub header: Header,
     pub questions: Vec<Question>,

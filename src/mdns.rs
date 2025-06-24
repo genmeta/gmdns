@@ -10,13 +10,7 @@ use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tracing::{debug, warn};
 
 use crate::{
-    parser::{
-        packet::Packet,
-        record::{
-            RData::{E, E6, EE, EE6},
-            endpoint::EndpointAddr,
-        },
-    },
+    parser::{packet::Packet, record::endpoint::EndpointAddr},
     protocol::MdnsProtocol,
 };
 
@@ -38,7 +32,7 @@ impl Mdns {
             async move {
                 loop {
                     let packet = Packet::query(service_name.clone());
-                    if let Err(e) = proto.spwan_broadcast_packet(packet) {
+                    if let Err(e) = proto.spwan_broadcast_packet(&packet) {
                         warn!("[MDNS]: broadcast packet error: {}", e);
                     }
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -49,18 +43,25 @@ impl Mdns {
         tokio::spawn({
             let proto = proto.clone();
             let hosts = hosts.clone();
+            let service_name = service_name.clone();
             async move {
                 let req_rx = proto.req_deque();
                 while let Some((_src, query)) = req_rx.pop().await {
                     let guard = hosts.lock().unwrap();
-                    let host_name = guard.keys().cloned().collect::<HashSet<_>>();
-                    tracing::debug!(
-                        "[MDNS]: Received query : host {host_name:?} query {:?} src {:?}",
-                        query,
-                        _src,
-                    );
-                    let packet = Packet::answer(query.header.id, &guard);
-                    let _ = proto.spwan_broadcast_packet(packet);
+                    let host_name = guard
+                        .keys()
+                        .cloned()
+                        .into_iter()
+                        .map(|h| Self::local_name(service_name.clone(), h))
+                        .collect::<HashSet<_>>();
+                    if query
+                        .questions
+                        .iter()
+                        .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
+                    {
+                        let packet = Packet::answer(query.header.id, &guard);
+                        let _ = proto.spwan_broadcast_packet(&packet);
+                    }
                 }
             }
         });
@@ -97,33 +98,10 @@ impl Mdns {
     }
 
     pub async fn query(&self, domain: String) -> io::Result<Vec<EndpointAddr>> {
-        let local_name = Self::local_name(self.service_name.clone(), domain.clone());
-        let packet = Packet::query_with_id(local_name.clone());
         let proto = self.proto.clone();
+        let local_name = Self::local_name(self.service_name.clone(), domain.clone());
         tracing::info!("[MDNS]: Querying for: {local_name}");
-        let (src, response) = proto.query(packet).await?;
-        let mut endpoints = response
-            .answers
-            .into_iter()
-            .filter_map(|answer| {
-                debug!("[MDNS]: recv response: {answer:?}");
-                if answer.name != local_name {
-                    debug!(
-                        "[MDNS]: Ignored answer for different service name: {} != {}",
-                        answer.name, local_name
-                    );
-                    return None;
-                }
-                match answer.data {
-                    E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
-                    _ => {
-                        debug!("Ignored record: {answer:?}");
-                        None
-                    }
-                }
-            })
-            .collect::<Vec<_>>();
-
+        let (src, mut endpoints) = proto.query(local_name).await?;
         if let Some(pos) = endpoints.iter().position(|ep| ep.addr().ip() == src.ip()) {
             endpoints.swap(0, pos);
         }

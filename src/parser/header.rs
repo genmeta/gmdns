@@ -21,7 +21,7 @@ use nom::number::streaming::be_u16;
 /// |                    ARCOUNT                    |
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Header {
     pub(crate) id: u16,
     pub(crate) flags: Flags,

@@ -12,7 +12,13 @@ use tokio::{net::UdpSocket, time::timeout};
 
 use crate::{
     async_deque::ArcAsyncDeque,
-    parser::packet::{Packet, WritePacket, be_packet},
+    parser::{
+        packet::{Packet, WritePacket, be_packet},
+        record::{
+            RData::{E, E6, EE, EE6},
+            endpoint::EndpointAddr,
+        },
+    },
 };
 
 const MULTICAST_PORT: u16 = 5353;
@@ -66,8 +72,8 @@ impl MdnsProtocol {
                     match (packet.header.flags.query(), packet.header.id) {
                         (true, 0) => Self::push_to_deque(&resp_deque, src, packet),
                         (true, _) => {
-                            if let Some((_id, pending)) = response_router.remove(&packet.header.id)
-                            {
+                            if let Some(entry) = response_router.get(&packet.header.id) {
+                                let pending = entry.value().clone();
                                 Self::push_to_deque(&pending, src, packet);
                             }
                         }
@@ -85,29 +91,61 @@ impl MdnsProtocol {
         })
     }
 
-    pub async fn query(&self, packet: Packet) -> io::Result<(SocketAddr, Packet)> {
+    pub async fn query(&self, local_name: String) -> io::Result<(SocketAddr, Vec<EndpointAddr>)> {
+        let packet = Packet::query_with_id(local_name.clone());
         let query_id = packet.header.id;
         if query_id == 0 {
             return Err(io::Error::other("query id should not be 0"));
         }
-        self.spwan_broadcast_packet(packet)?;
+        self.spwan_broadcast_packet(&packet)?;
         let pending_response = ArcAsyncDeque::new();
         self.response_router
             .insert(query_id, pending_response.clone());
 
-        match timeout(Duration::from_secs(1), pending_response.pop()).await {
-            Ok(Some((src, packet))) => {
-                self.response_router.remove(&query_id);
-                Ok((src, packet))
-            }
-            _ => {
-                self.response_router.remove(&query_id);
-                Err(io::Error::new(io::ErrorKind::TimedOut, "Query timed out"))
+        for _ in 0..3 {
+            match timeout(Duration::from_millis(300), pending_response.pop()).await {
+                Ok(Some((src, packet))) => {
+                    let endpoint = packet
+                        .answers
+                        .iter()
+                        .filter_map(|answer| {
+                            tracing::debug!("[MDNS]: recv response: {answer:?}");
+                            if answer.name != local_name {
+                                tracing::debug!(
+                                    "[MDNS]: Ignored answer for different service name: {} != {}",
+                                    answer.name,
+                                    local_name
+                                );
+                                return None;
+                            }
+                            match answer.data {
+                                E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
+                                _ => {
+                                    tracing::debug!("Ignored record: {answer:?}");
+                                    None
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if endpoint.is_empty() {
+                        self.spwan_broadcast_packet(&packet)?;
+                        continue;
+                    } else {
+                        self.response_router.remove(&query_id);
+                        return Ok((src, endpoint));
+                    }
+                }
+                _ => {
+                    self.spwan_broadcast_packet(&packet)?;
+                }
             }
         }
+        self.response_router.remove(&query_id);
+        return Err(io::Error::new(io::ErrorKind::TimedOut, "Query timed out"));
     }
 
-    pub fn spwan_broadcast_packet(&self, packet: Packet) -> io::Result<()> {
+    pub fn spwan_broadcast_packet(&self, packet: &Packet) -> io::Result<()> {
+        let packet = packet.clone();
         tokio::spawn({
             let io = self.io.clone();
             async move {

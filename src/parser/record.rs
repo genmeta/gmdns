@@ -44,7 +44,7 @@ pub mod txt;
 /// /                                               /
 /// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 /// '''
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct ResourceRecord {
     pub(crate) name: Name,
     pub(crate) typ: Type,
@@ -244,7 +244,6 @@ pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8]
     let (mut remain, rdlen) = be_u16(remain)?;
 
     let Ok(typ) = Type::try_from(typ) else {
-        tracing::warn!("unkown record type: {typ} skip record");
         if remain.len() < rdlen as usize {
             return Err(nom::Err::Incomplete(nom::Needed::new(
                 rdlen as usize - remain.len(),
@@ -258,9 +257,9 @@ pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8]
     };
     let (mut remain, rdata) = be_rdata(remain, origin, typ, rdlen)?;
 
-    let multicast_unique = cls & 0x8000 != 0;
+    let multicast_unique = cls & 0x8000 == 0x8000;
+    let cls = cls & 0x7FFF;
     let Ok(cls) = Class::try_from(cls) else {
-        tracing::warn!("unkown class type: {cls}");
         if remain.len() < rdlen as usize {
             return Err(nom::Err::Incomplete(nom::Needed::new(
                 rdlen as usize - remain.len(),
