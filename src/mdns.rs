@@ -56,7 +56,7 @@ impl Mdns {
                     let host_name = guard.keys().cloned().collect::<HashSet<_>>();
                     tracing::debug!(
                         "[MDNS]: Received query : host {host_name:?} query {:?} src {:?}",
-                        query.questions[0].name,
+                        query,
                         _src,
                     );
                     let packet = Packet::answer(query.header.id, &guard);
