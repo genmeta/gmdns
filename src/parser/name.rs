@@ -1,5 +1,6 @@
 use bytes::BufMut;
 use nom::{IResult, bytes::streaming::take, number::streaming::be_u8};
+use tracing::warn;
 
 pub type Name = String;
 
@@ -77,7 +78,6 @@ pub trait WriteName {
 
 impl<T: BufMut> WriteName for T {
     fn put_name(&mut self, name: &Name) {
-        // 处理根域名（直接写入0）
         if name == "." {
             self.put_u8(0);
             return;
@@ -85,18 +85,15 @@ impl<T: BufMut> WriteName for T {
 
         let parts: Vec<&str> = name.split('.').collect();
         for (i, part) in parts.iter().enumerate() {
-            // 检查标签长度
             if part.is_empty() {
-                // 仅允许最后一个标签为空（根域名）
                 if i != parts.len() - 1 {
-                    panic!("Invalid empty label in middle");
+                    warn!("Invalid empty label in middle");
                 }
                 continue;
             }
-
             let len = part.len();
             if len > 63 {
-                panic!("Label exceeds 63 bytes");
+                warn!("Label exceeds 63 bytes");
             }
 
             self.put_u8(len as u8);
