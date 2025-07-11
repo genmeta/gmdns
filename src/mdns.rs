@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io::{self},
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -22,9 +22,9 @@ pub struct Mdns {
 }
 
 impl Mdns {
-    pub fn new(service_name: &str, device: Option<&str>) -> io::Result<Self> {
+    pub fn new(service_name: &str, ip: Ipv4Addr, device: &str) -> io::Result<Self> {
         let service_name = service_name.to_string();
-        let proto = MdnsProtocol::new(device)?;
+        let proto = MdnsProtocol::new(device, ip)?;
         let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<EndpointAddr>>::new()));
         tokio::spawn({
             let proto = proto.clone();
@@ -51,7 +51,6 @@ impl Mdns {
                     let host_name = guard
                         .keys()
                         .cloned()
-                        .into_iter()
                         .map(|h| Self::local_name(service_name.clone(), h))
                         .collect::<HashSet<_>>();
                     if query

@@ -34,7 +34,7 @@ pub struct MdnsProtocol {
 }
 
 impl MdnsProtocol {
-    pub fn new(device: Option<&str>) -> io::Result<Self> {
+    pub fn new(_device: &str, ip: Ipv4Addr) -> io::Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -44,11 +44,9 @@ impl MdnsProtocol {
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
         socket.set_multicast_loop_v4(false)?;
-        socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
-        if let Some(_device) = device {
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            socket.bind_device(Some(_device.as_bytes()));
-        }
+        socket.join_multicast_v4(&MULTICAST_ADDR, &ip)?;
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        socket.bind_device(Some(_device.as_bytes()));
 
         let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
 
