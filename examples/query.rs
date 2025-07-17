@@ -16,7 +16,7 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
-    let mdns = gmdns::mdns::Mdns::new(SERVICE_NAME, None)?;
+    let mdns = gmdns::mdns::Mdns::new(SERVICE_NAME, "192.168.1.27".parse().unwrap(), "eth0")?;
 
     let ret = mdns
         .query("ljsy.test.genmeta.net".to_string())
