@@ -9,6 +9,7 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use socket2::{Domain, Socket, Type};
 use tokio::{net::UdpSocket, time::timeout};
+use tracing::info;
 
 use crate::{
     async_deque::ArcAsyncDeque,
@@ -35,6 +36,7 @@ pub struct MdnsProtocol {
 
 impl MdnsProtocol {
     pub fn new(_device: &str, _ip: Ipv4Addr) -> io::Result<Self> {
+        info!("[MDNS] add mdns dvice {_device} {_ip}");
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -43,7 +45,11 @@ impl MdnsProtocol {
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
-        socket.set_multicast_loop_v4(false)?;
+        if _ip.is_loopback() {
+            socket.set_multicast_loop_v4(true)?;
+        } else {
+            socket.set_multicast_loop_v4(false)?;
+        }
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         socket.bind_device(Some(_device.as_bytes()));
