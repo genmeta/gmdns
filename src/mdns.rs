@@ -35,7 +35,7 @@ impl Mdns {
                     if let Err(e) = proto.spwan_broadcast_packet(&packet) {
                         warn!("[MDNS]: broadcast packet error: {}", e);
                     }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             }
         });
