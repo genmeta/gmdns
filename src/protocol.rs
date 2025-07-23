@@ -1,42 +1,32 @@
 use std::{
-    io::{self},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
+    num::NonZero,
+    pin::Pin,
+    sync::{Arc, Weak},
+    task::{Context, Poll},
     time::Duration,
 };
 
-use bytes::BytesMut;
 use dashmap::DashMap;
+use futures::{Stream, StreamExt};
 use socket2::{Domain, Socket, Type};
-use tokio::{net::UdpSocket, time::timeout};
-use tracing::info;
+use thiserror::Error;
+use tokio::{io, net::UdpSocket, task::JoinSet, time};
 
-use crate::{
-    async_deque::ArcAsyncDeque,
-    parser::{
-        packet::{Packet, WritePacket, be_packet},
-        record::{
-            RData::{E, E6, EE, EE6},
-            endpoint::EndpointAddr,
-        },
-    },
+use crate::parser::{
+    packet::{Packet, WritePacket, be_packet},
+    record::endpoint::EndpointAddr,
 };
+
+pub struct MdnsSocket(UdpSocket);
 
 const MULTICAST_PORT: u16 = 5353;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MAX_DEQUE_SIZE: usize = 64;
 
-#[derive(Clone)]
-pub struct MdnsProtocol {
-    io: Arc<UdpSocket>,
-    req_deque: ArcAsyncDeque<(SocketAddr, Packet)>,
-    resp_deque: ArcAsyncDeque<(SocketAddr, Packet)>,
-    response_router: Arc<DashMap<u16, ArcAsyncDeque<(SocketAddr, Packet)>>>,
-}
-
-impl MdnsProtocol {
-    pub fn new(_device: &str, _ip: Ipv4Addr) -> io::Result<Self> {
-        info!("[MDNS] add mdns dvice {_device} {_ip}");
+impl MdnsSocket {
+    pub fn new(device: &str, ip: Ipv4Addr) -> io::Result<Self> {
+        tracing::info!(target: "mdns", "add mdns dvice {device} {ip}");
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -45,135 +35,255 @@ impl MdnsProtocol {
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
-        if _ip.is_loopback() {
+        if ip.is_loopback() {
             socket.set_multicast_loop_v4(true)?;
         } else {
             socket.set_multicast_loop_v4(false)?;
         }
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        socket.bind_device(Some(_device.as_bytes()));
+        socket.bind_device(Some(device.as_bytes()))?;
 
-        let io = Arc::new(tokio::net::UdpSocket::from_std(socket.into())?);
-
-        let req_deque = ArcAsyncDeque::new();
-        let resp_deque = ArcAsyncDeque::new();
-        let response_router = Arc::new(DashMap::<u16, ArcAsyncDeque<(SocketAddr, Packet)>>::new());
-
-        let _rcvd_task = {
-            let response_router = response_router.clone();
-            let req_deque = req_deque.clone();
-            let resp_deque = resp_deque.clone();
-            let io = io.clone();
-            tokio::spawn(async move {
-                loop {
-                    let mut recv_buffer = [0u8; 1024];
-                    let (count, src) = io.recv_from(&mut recv_buffer).await.unwrap();
-                    let packet = match be_packet(&recv_buffer[..count]) {
-                        Ok((_, p)) => p,
-                        Err(_) => continue,
-                    };
-                    match (packet.header.flags.query(), packet.header.id) {
-                        (true, 0) => Self::push_to_deque(&resp_deque, src, packet),
-                        (true, _) => {
-                            if let Some(entry) = response_router.get(&packet.header.id) {
-                                let pending = entry.value().clone();
-                                Self::push_to_deque(&pending, src, packet);
-                            }
-                        }
-                        (false, _) => Self::push_to_deque(&req_deque, src, packet),
-                    }
-                }
-            })
-        }
-        .abort_handle();
-        Ok(Self {
-            io,
-            req_deque,
-            resp_deque,
-            response_router,
-        })
+        UdpSocket::from_std(socket.into()).map(Self)
     }
 
-    pub async fn query(&self, local_name: String) -> io::Result<(SocketAddr, Vec<EndpointAddr>)> {
-        let packet = Packet::query_with_id(local_name.clone());
-        let query_id = packet.header.id;
-        if query_id == 0 {
-            return Err(io::Error::other("query id should not be 0"));
-        }
-        self.spwan_broadcast_packet(&packet)?;
-        let pending_response = ArcAsyncDeque::new();
-        self.response_router
-            .insert(query_id, pending_response.clone());
+    pub async fn receive(&self) -> io::Result<(SocketAddr, Packet)> {
+        loop {
+            let mut recv_buffer = [0u8; 2048];
 
-        for _ in 0..3 {
-            match timeout(Duration::from_millis(300), pending_response.pop()).await {
-                Ok(Some((src, packet))) => {
-                    let endpoint = packet
-                        .answers
-                        .iter()
-                        .filter_map(|answer| {
-                            tracing::debug!("[MDNS]: recv response: {answer:?}");
-                            if answer.name != local_name {
-                                tracing::debug!(
-                                    "[MDNS]: Ignored answer for different service name: {} != {}",
-                                    answer.name,
-                                    local_name
-                                );
-                                return None;
-                            }
-                            match answer.data {
-                                E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
-                                _ => {
-                                    tracing::debug!("Ignored record: {answer:?}");
-                                    None
-                                }
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    if endpoint.is_empty() {
-                        self.spwan_broadcast_packet(&packet)?;
-                        continue;
-                    } else {
-                        self.response_router.remove(&query_id);
-                        return Ok((src, endpoint));
-                    }
-                }
-                _ => {
-                    self.spwan_broadcast_packet(&packet)?;
-                }
-            }
+            let (size, source) = self.0.recv_from(&mut recv_buffer).await?;
+
+            let Ok((_remain, packet)) = be_packet(&recv_buffer[..size]) else {
+                continue;
+            };
+
+            return Ok((source, packet));
         }
-        self.response_router.remove(&query_id);
-        Err(io::Error::new(io::ErrorKind::TimedOut, "Query timed out"))
     }
 
-    pub fn spwan_broadcast_packet(&self, packet: &Packet) -> io::Result<()> {
-        let packet = packet.clone();
-        tokio::spawn({
-            let io = self.io.clone();
-            async move {
-                let mut buf = BytesMut::with_capacity(1024);
-                buf.put_packet(&packet);
-                io.send_to(buf.as_ref(), (MULTICAST_ADDR, MULTICAST_PORT))
-                    .await
-            }
-        });
+    pub async fn broadcast_packet(&self, packet: Packet) -> io::Result<()> {
+        let mut buf = Vec::with_capacity(2048);
+        buf.put_packet(&packet);
+        self.0
+            .send_to(&buf, (MULTICAST_ADDR, MULTICAST_PORT))
+            .await?;
+
         Ok(())
     }
+}
 
-    pub fn resp_queue(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
-        self.resp_deque.clone()
-    }
+#[allow(clippy::type_complexity)]
+pub struct PacketRouter {
+    requests: (
+        flume::Sender<(SocketAddr, Packet)>,
+        flume::Receiver<(SocketAddr, Packet)>,
+    ),
+    responses: (
+        flume::Sender<(SocketAddr, Packet)>,
+        flume::Receiver<(SocketAddr, Packet)>,
+    ),
+    queries: DashMap<NonZero<u16>, flume::Sender<(SocketAddr, Packet)>>,
+}
 
-    pub fn req_deque(&self) -> ArcAsyncDeque<(SocketAddr, Packet)> {
-        self.req_deque.clone()
-    }
-
-    fn push_to_deque(deque: &ArcAsyncDeque<(SocketAddr, Packet)>, src: SocketAddr, packet: Packet) {
-        deque.push_back((src, packet));
-        if deque.len() > MAX_DEQUE_SIZE {
-            tokio::spawn(deque.pop());
+impl PacketRouter {
+    pub fn new() -> Self {
+        Self {
+            requests: flume::bounded(MAX_DEQUE_SIZE),
+            responses: flume::bounded(MAX_DEQUE_SIZE),
+            queries: DashMap::new(),
         }
+    }
+
+    pub fn receive_query(
+        &self,
+    ) -> impl Future<Output = Result<(SocketAddr, Packet), flume::RecvError>> + Send + use<> {
+        self.requests.1.clone().into_recv_async()
+    }
+
+    pub fn receive_boardcast(
+        &self,
+    ) -> impl Future<Output = Result<(SocketAddr, Packet), flume::RecvError>> + Send + use<> {
+        self.responses.1.clone().into_recv_async()
+    }
+
+    pub async fn register_query(
+        self: &Arc<Self>,
+        query_id: NonZero<u16>,
+    ) -> impl Stream<Item = (SocketAddr, Packet)> {
+        struct Responses {
+            query_id: NonZero<u16>,
+            router: Weak<PacketRouter>,
+            recver: flume::r#async::RecvStream<'static, (SocketAddr, Packet)>,
+        }
+
+        impl Stream for Responses {
+            type Item = (SocketAddr, Packet);
+
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                Pin::new(&mut self.recver).poll_next(cx)
+            }
+        }
+
+        impl Drop for Responses {
+            fn drop(&mut self) {
+                if let Some(router) = self.router.upgrade() {
+                    router.queries.remove(&self.query_id);
+                }
+            }
+        }
+
+        let (tx, rx) = flume::bounded(MAX_DEQUE_SIZE);
+        self.queries.insert(query_id, tx);
+
+        Responses {
+            query_id,
+            router: Arc::downgrade(self),
+            recver: rx.into_stream(),
+        }
+    }
+
+    pub fn deliver(&self, source: SocketAddr, packet: Packet) {
+        match (packet.header.flags.query(), packet.header.id) {
+            (true, 0) => {
+                if let Err(e) = self.responses.0.try_send((source, packet)) {
+                    tracing::warn!(target: "mdns", "Failed to deliver boardcast: {e}");
+                }
+            }
+            (true, query_id) => match self.queries.get(&NonZero::new(query_id).unwrap()) {
+                Some(tx) => {
+                    if let Err(e) = tx.try_send((source, packet)) {
+                        tracing::warn!(
+                            target: "mdns",
+                            "Failed to route response for query id {query_id}: {e}"
+                        );
+                    }
+                }
+                None => tracing::warn!(
+                    target: "mdns",
+                    "Received response for query id {query_id}, but no such kquery registered"
+                ),
+            },
+            (false, _) => {
+                if let Err(e) = self.requests.0.try_send((source, packet)) {
+                    tracing::warn!(target: "mdns", "Failed to deliver incoming request: {e}");
+                }
+            }
+        }
+    }
+}
+
+pub struct MdnsProtocol {
+    socket: MdnsSocket,
+    router: Weak<PacketRouter>,
+}
+
+#[derive(Debug, Error)]
+#[error("MDns socket is not listening")]
+pub struct Disconnected;
+
+impl From<Disconnected> for io::Error {
+    fn from(error: Disconnected) -> Self {
+        io::Error::new(io::ErrorKind::NotConnected, error)
+    }
+}
+
+impl MdnsProtocol {
+    pub fn new(device: &str, ip: Ipv4Addr) -> io::Result<Arc<Self>> {
+        let socket = MdnsSocket::new(device, ip)?;
+        let router = Arc::new(PacketRouter::new());
+        let proto = Arc::new(Self {
+            socket,
+            router: Arc::downgrade(&router),
+        });
+
+        tokio::spawn({
+            let proto = proto.clone();
+            async move {
+                while let Ok((source, packet)) = proto.socket.receive().await {
+                    router.deliver(source, packet);
+                }
+            }
+        });
+
+        Ok(proto)
+    }
+
+    pub async fn broadcast_packet(&self, packet: Packet) -> io::Result<()> {
+        self.socket.broadcast_packet(packet).await
+    }
+
+    pub async fn query(
+        self: &Arc<Self>,
+        local_name: String,
+    ) -> io::Result<(SocketAddr, Vec<EndpointAddr>)> {
+        let router = self.router.upgrade().ok_or(Disconnected)?;
+
+        let packet = Packet::query_with_id(local_name.clone());
+        let query_id = NonZero::new(packet.header.id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Query id should not be 0")
+        })?;
+
+        let mut packets = router.register_query(query_id).await;
+        let mut broadcast_tasks = JoinSet::new();
+
+        for _ in 0..3 {
+            _ = broadcast_tasks.spawn({
+                let this = self.clone();
+                let packet = packet.clone();
+                async move { this.broadcast_packet(packet).await }
+            });
+
+            if let Ok(Some((source, packet))) =
+                time::timeout(Duration::from_millis(300), packets.next()).await
+            {
+                use crate::parser::record::RData::*;
+                let endpoints = packet
+                    .answers
+                    .iter()
+                    .inspect(|answer| {
+                        tracing::debug!(target: "mdns", "Recv response: {answer:?}");
+                    })
+                    .filter(|answer| {
+                        if answer.name != local_name {
+                            tracing::debug!(
+                                target: "mdns",
+                                "Ignored answer for different service name: {} != {}",
+                                answer.name,
+                                local_name
+                            );
+                        }
+                        answer.name == local_name
+                    })
+                    .filter_map(|answer| match answer.data {
+                        E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
+                        _ => {
+                            tracing::debug!("Ignored record: {answer:?}");
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                if !endpoints.is_empty() {
+                    return Ok((source, endpoints));
+                }
+            }
+        }
+
+        broadcast_tasks.abort_all();
+        Err(io::ErrorKind::TimedOut.into())
+    }
+
+    pub async fn receive_query(&self) -> Result<(SocketAddr, Packet), Disconnected> {
+        let router = self.router.upgrade().ok_or(Disconnected)?;
+
+        router.receive_query().await.map_err(|_| Disconnected)
+    }
+    pub async fn receive_boardcast(&self) -> Result<(SocketAddr, Packet), Disconnected> {
+        let router = self.router.upgrade().ok_or(Disconnected)?;
+
+        router.receive_boardcast().await.map_err(|_| Disconnected)
     }
 }
