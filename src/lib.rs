@@ -1,4 +1,3 @@
-pub mod async_deque;
 pub mod mdns;
 pub mod parser;
 mod protocol;
