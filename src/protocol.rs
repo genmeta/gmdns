@@ -26,7 +26,7 @@ const MAX_DEQUE_SIZE: usize = 64;
 
 impl MdnsSocket {
     pub fn new(device: &str, ip: Ipv4Addr) -> io::Result<Self> {
-        tracing::info!(target: "mdns", "add mdns dvice {device} {ip}");
+        tracing::info!(target: "mdns", "add mdns device {device} {ip}");
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -35,11 +35,7 @@ impl MdnsSocket {
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
-        if ip.is_loopback() {
-            socket.set_multicast_loop_v4(true)?;
-        } else {
-            socket.set_multicast_loop_v4(false)?;
-        }
+        socket.set_multicast_loop_v4(ip.is_loopback())?;
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
         socket.bind_device(Some(device.as_bytes()))?;
@@ -148,8 +144,8 @@ impl PacketRouter {
     pub fn deliver(&self, source: SocketAddr, packet: Packet) {
         match (packet.header.flags.query(), packet.header.id) {
             (true, 0) => {
-                if let Err(e) = self.responses.0.try_send((source, packet)) {
-                    tracing::warn!(target: "mdns", "Failed to deliver boardcast: {e}");
+                if let Err(_e) = self.responses.0.try_send((source, packet)) {
+                    // tracing::warn!(target: "mdns", "Failed to deliver boardcast: {e}");
                 }
             }
             (true, query_id) => match self.queries.get(&NonZero::new(query_id).unwrap()) {

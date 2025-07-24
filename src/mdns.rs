@@ -35,7 +35,6 @@ impl Mdns {
                 let mut interval = time::interval(Duration::from_secs(10));
                 loop {
                     interval.tick().await;
-
                     let packet = Packet::query(service_name.clone());
                     if let Err(e) = proto.broadcast_packet(packet).await {
                         warn!(target: "mdns", "Broadcast packet error: {}", e);
