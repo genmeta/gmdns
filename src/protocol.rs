@@ -144,27 +144,27 @@ impl PacketRouter {
     pub fn deliver(&self, source: SocketAddr, packet: Packet) {
         match (packet.header.flags.query(), packet.header.id) {
             (true, 0) => {
-                if let Err(_e) = self.responses.0.try_send((source, packet)) {
-                    // tracing::warn!(target: "mdns", "Failed to deliver boardcast: {e}");
+                if let Err(e) = self.responses.0.try_send((source, packet)) {
+                    tracing::trace!(target: "mdns", "Failed to deliver boardcast: {e}");
                 }
             }
             (true, query_id) => match self.queries.get(&NonZero::new(query_id).unwrap()) {
                 Some(tx) => {
                     if let Err(e) = tx.try_send((source, packet)) {
-                        tracing::warn!(
+                        tracing::trace!(
                             target: "mdns",
                             "Failed to route response for query id {query_id}: {e}"
                         );
                     }
                 }
-                None => tracing::warn!(
+                None => tracing::trace!(
                     target: "mdns",
                     "Received response for query id {query_id}, but no such kquery registered"
                 ),
             },
             (false, _) => {
                 if let Err(e) = self.requests.0.try_send((source, packet)) {
-                    tracing::warn!(target: "mdns", "Failed to deliver incoming request: {e}");
+                    tracing::trace!(target: "mdns", "Failed to deliver incoming request: {e}");
                 }
             }
         }
