@@ -35,10 +35,12 @@ impl MdnsSocket {
 
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MULTICAST_PORT);
         socket.bind(&bind.into())?;
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        socket.bind_device(Some(device.as_bytes()))?;
         socket.set_multicast_loop_v4(ip.is_loopback())?;
         socket.join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
         #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        socket.bind_device(Some(device.as_bytes()))?;
+        socket.set_multicast_if_v4(&ip)?;
 
         UdpSocket::from_std(socket.into()).map(Self)
     }
