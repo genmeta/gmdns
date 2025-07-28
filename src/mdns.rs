@@ -33,12 +33,14 @@ impl Mdns {
             let service_name = service_name.clone();
             async move {
                 let mut interval = time::interval(Duration::from_secs(10));
+                interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
                 loop {
                     interval.tick().await;
                     let packet = Packet::query(service_name.clone());
                     if let Err(e) = proto.broadcast_packet(packet).await {
                         warn!(target: "mdns", "Broadcast packet error: {}", e);
                     }
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             }
         });
