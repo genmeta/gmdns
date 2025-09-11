@@ -1,6 +1,5 @@
 use bytes::BufMut;
 use nom::{IResult, bytes::streaming::take, number::streaming::be_u8};
-use tracing::warn;
 
 pub type Name = String;
 
@@ -87,13 +86,13 @@ impl<T: BufMut> WriteName for T {
         for (i, part) in parts.iter().enumerate() {
             if part.is_empty() {
                 if i != parts.len() - 1 {
-                    warn!("Invalid empty label in middle");
+                    tracing::warn!(target: "mdns", name, "Invalid empty label in middle");
                 }
                 continue;
             }
             let len = part.len();
             if len > 63 {
-                warn!("Label exceeds 63 bytes");
+                tracing::warn!(target: "mdns", name, "Label exceeds 63 bytes");
             }
 
             self.put_u8(len as u8);

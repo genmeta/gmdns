@@ -8,7 +8,6 @@ use std::{
 
 use tokio::time::{self};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
-use tracing::{debug, warn};
 
 use crate::{
     parser::{packet::Packet, record::endpoint::EndpointAddr},
@@ -38,7 +37,7 @@ impl Mdns {
                     interval.tick().await;
                     let packet = Packet::query(service_name.clone());
                     if let Err(e) = proto.broadcast_packet(packet).await {
-                        warn!(target: "mdns", "Broadcast packet error: {}", e);
+                        tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
                     }
                     tokio::time::sleep(Duration::from_secs(10)).await;
                 }
@@ -65,8 +64,8 @@ impl Mdns {
                         let packet = Packet::answer(query.header.id, &guard);
                         let proto = proto.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = proto.broadcast_packet(packet).await {
-                                warn!(target: "mdns", "Broadcast answer packet error: {}", e);
+                            if let Err(error) = proto.broadcast_packet(packet).await {
+                                tracing::debug!(target: "mdns", ?error,"Broadcast answer packet error");
                             }
                         });
                     }
@@ -88,19 +87,16 @@ impl Mdns {
     pub fn add_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
         let local_name = Self::local_name(self.service_name.clone(), host_name.clone());
         let mut guard = self.hosts.lock().unwrap();
-        debug!(
+        tracing::debug!(
             target: "mdns",
-            "Adding host: {} with addresses: {:?}",
-            local_name, host_addr
+            %local_name, ?host_addr,
+            "Adding host with addresses",
         );
         let eps = host_addr
             .into_iter()
-            .map(|addr| {
-                if addr.is_ipv6() {
-                    EndpointAddr::E6(addr)
-                } else {
-                    EndpointAddr::E(addr)
-                }
+            .map(|addr| match addr {
+                SocketAddr::V4(addr) => EndpointAddr::E(addr),
+                SocketAddr::V6(addr) => EndpointAddr::E6(addr),
             })
             .collect::<Vec<_>>();
         guard.insert(local_name, eps);
@@ -109,7 +105,6 @@ impl Mdns {
     pub async fn query(&self, domain: String) -> io::Result<Vec<EndpointAddr>> {
         let proto = self.proto.clone();
         let local_name = Self::local_name(self.service_name.clone(), domain.clone());
-        tracing::info!(target: "mdns", "Querying for: {local_name}");
         let (src, mut endpoints) = proto.query(local_name).await?;
         if let Some(pos) = endpoints.iter().position(|ep| ep.addr().ip() == src.ip()) {
             endpoints.swap(0, pos);
@@ -120,7 +115,6 @@ impl Mdns {
                 format!("No endpoint found for: {domain}"),
             ));
         }
-        tracing::info!(target: "mdns", "Found endpoints: {endpoints:?} for {domain}");
         Ok(endpoints)
     }
 
@@ -130,8 +124,8 @@ impl Mdns {
         tokio::spawn({
             async move {
                 while let Ok((src, packet)) = proto.receive_boardcast().await {
-                    if let Err(e) = tx.send((src, packet)).await {
-                        warn!(target: "mdns", "Failed to send response packet: {e}");
+                    if let Err(error) = tx.send((src, packet)).await {
+                        tracing::debug!(target: "mdns", %error, "Failed to send response packet");
                     }
                 }
             }

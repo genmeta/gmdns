@@ -26,7 +26,7 @@ const MAX_DEQUE_SIZE: usize = 64;
 
 impl MdnsSocket {
     pub fn new(device: &str, ip: Ipv4Addr) -> io::Result<Self> {
-        tracing::info!(target: "mdns", "add mdns device {device} {ip}");
+        tracing::debug!(target: "mdns", device, %ip, "Add mdns device");
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
         socket.set_nonblocking(true)?;
         socket.set_reuse_address(true)?;
@@ -146,27 +146,29 @@ impl PacketRouter {
     pub fn deliver(&self, source: SocketAddr, packet: Packet) {
         match (packet.header.flags.query(), packet.header.id) {
             (true, 0) => {
-                if let Err(e) = self.responses.0.try_send((source, packet)) {
-                    tracing::trace!(target: "mdns", "Failed to deliver boardcast: {e}");
+                if let Err(error) = self.responses.0.try_send((source, packet)) {
+                    tracing::debug!(target: "mdns", %error,"Failed to deliver boardcast");
                 }
             }
             (true, query_id) => match self.queries.get(&NonZero::new(query_id).unwrap()) {
                 Some(tx) => {
-                    if let Err(e) = tx.try_send((source, packet)) {
-                        tracing::trace!(
+                    if let Err(error) = tx.try_send((source, packet)) {
+                        tracing::debug!(
                             target: "mdns",
-                            "Failed to route response for query id {query_id}: {e}"
+                            %query_id, %error,
+                            "Failed to route response for query id"
                         );
                     }
                 }
-                None => tracing::trace!(
+                None => tracing::debug!(
                     target: "mdns",
-                    "Received response for query id {query_id}, but no such kquery registered"
+                    %query_id,
+                    "Received response for query id, but no such kquery registered"
                 ),
             },
             (false, _) => {
-                if let Err(e) = self.requests.0.try_send((source, packet)) {
-                    tracing::trace!(target: "mdns", "Failed to deliver incoming request: {e}");
+                if let Err(error) = self.requests.0.try_send((source, packet)) {
+                    tracing::debug!(target: "mdns", %error, "Failed to deliver incoming request");
                 }
             }
         }
@@ -242,15 +244,15 @@ impl MdnsProtocol {
                     .answers
                     .iter()
                     .inspect(|answer| {
-                        tracing::debug!(target: "mdns", "Recv response: {answer:?}");
+                        tracing::debug!(target: "mdns", ?answer, "Recv response");
                     })
                     .filter(|answer| {
                         if answer.name != local_name {
                             tracing::debug!(
                                 target: "mdns",
-                                "Ignored answer for different service name: {} != {}",
-                                answer.name,
-                                local_name
+                                answer_name = answer.name,
+                                local_name,
+                                "Ignored answer for different service name",
                             );
                         }
                         answer.name == local_name
@@ -258,7 +260,7 @@ impl MdnsProtocol {
                     .filter_map(|answer| match answer.data {
                         E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
                         _ => {
-                            tracing::debug!("Ignored record: {answer:?}");
+                            tracing::debug!(target: "mdns", ?answer, "Ignored record");
                             None
                         }
                     })
