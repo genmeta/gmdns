@@ -1,24 +1,35 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     io::{self},
     net::{Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+use futures::{Stream, stream};
 use tokio::time::{self};
-use tokio_stream::{Stream, wrappers::ReceiverStream};
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     parser::{packet::Packet, record::endpoint::EndpointAddr},
     protocol::MdnsProtocol,
 };
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct Mdns {
     service_name: String,
+    local_device: String,
     proto: Arc<MdnsProtocol>,
     hosts: Arc<Mutex<HashMap<String, Vec<EndpointAddr>>>>,
+    _broadcast: AbortOnDropHandle<()>,
+    _responder: AbortOnDropHandle<()>,
+}
+
+impl Display for Mdns {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mDNS({})", self.local_device)
+    }
 }
 
 impl Mdns {
@@ -27,7 +38,7 @@ impl Mdns {
         let proto = MdnsProtocol::new(device, ip)?;
         let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<EndpointAddr>>::new()));
 
-        tokio::spawn({
+        let broadcast = AbortOnDropHandle::new(tokio::spawn({
             let proto = proto.clone();
             let service_name = service_name.clone();
             async move {
@@ -39,52 +50,62 @@ impl Mdns {
                     if let Err(e) = proto.broadcast_packet(packet).await {
                         tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
                     }
-                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             }
-        });
+        }));
 
-        tokio::spawn({
+        let responder = AbortOnDropHandle::new(tokio::spawn({
             let proto = proto.clone();
             let hosts = hosts.clone();
             let service_name = service_name.clone();
+
             async move {
                 while let Ok((_src, query)) = proto.receive_query().await {
-                    let guard = hosts.lock().unwrap();
-                    let host_name = guard
-                        .keys()
-                        .cloned()
-                        .map(|h| Self::local_name(service_name.clone(), h))
-                        .collect::<HashSet<_>>();
-                    if query
-                        .questions
-                        .iter()
-                        .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
+                    let packet = {
+                        let guard = hosts.lock().unwrap();
+                        let host_name = guard
+                            .keys()
+                            .cloned()
+                            .map(|h| Self::local_name(service_name.clone(), h))
+                            .collect::<HashSet<_>>();
+
+                        query
+                            .questions
+                            .iter()
+                            .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
+                            .then(|| Packet::answer(query.header.id, &guard))
+                    };
+                    if let Some(packet) = packet
+                        && let Err(e) = proto.broadcast_packet(packet).await
                     {
-                        let packet = Packet::answer(query.header.id, &guard);
-                        let proto = proto.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = proto.broadcast_packet(packet).await {
-                                tracing::debug!(target: "mdns", ?error,"Broadcast answer packet error");
-                            }
-                        });
+                        tracing::debug!(target: "mdns", "Send response error: {}", e);
                     }
                 }
             }
-        });
+        }));
 
         Ok(Self {
             service_name,
+            local_device: device.to_string(),
             proto,
             hosts,
+            _broadcast: broadcast,
+            _responder: responder,
         })
     }
 
+    #[inline]
+    pub fn local_device(&self) -> &str {
+        &self.local_device
+    }
+
+    #[inline]
     pub fn service_name(&self) -> &str {
         &self.service_name
     }
 
-    pub fn add_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
+    #[inline]
+    pub fn insert_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
         let local_name = Self::local_name(self.service_name.clone(), host_name.clone());
         let mut guard = self.hosts.lock().unwrap();
         tracing::debug!(
@@ -102,6 +123,7 @@ impl Mdns {
         guard.insert(local_name, eps);
     }
 
+    #[inline]
     pub async fn query(&self, domain: String) -> io::Result<Vec<EndpointAddr>> {
         let proto = self.proto.clone();
         let local_name = Self::local_name(self.service_name.clone(), domain.clone());
@@ -110,29 +132,19 @@ impl Mdns {
             endpoints.swap(0, pos);
         }
         if endpoints.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("No endpoint found for: {domain}"),
-            ));
+            return Err(io::Error::other("empty dns result"));
         }
         Ok(endpoints)
     }
 
-    pub fn discover(&mut self) -> impl Stream<Item = (SocketAddr, Packet)> {
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let proto = self.proto.clone();
-        tokio::spawn({
-            async move {
-                while let Ok((src, packet)) = proto.receive_boardcast().await {
-                    if let Err(error) = tx.send((src, packet)).await {
-                        tracing::debug!(target: "mdns", %error, "Failed to send response packet");
-                    }
-                }
-            }
-        });
-        ReceiverStream::new(rx)
+    #[inline]
+    pub fn discover(&self) -> impl Stream<Item = (SocketAddr, Packet)> {
+        Box::pin(stream::unfold(self.proto.clone(), async move |proto| {
+            Some((proto.receive_boardcast().await.ok()?, proto))
+        }))
     }
 
+    #[inline]
     fn local_name(service_name: String, name: String) -> String {
         name.split_once("genmeta.net")
             .map(|(prefix, _)| format!("{prefix}{service_name}"))

@@ -1,7 +1,7 @@
 use std::{io::Error, net::Ipv4Addr};
 
 use clap::Parser;
-use tokio_stream::StreamExt as _;
+use futures::StreamExt;
 
 const SERVICE_NAME: &str = "_genmeta.local";
 
@@ -18,8 +18,8 @@ struct Args {
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    let mut mdns = gmdns::mdns::Mdns::new(SERVICE_NAME, args.ip, &args.device)?;
-    mdns.add_host(
+    let mdns = gmdns::mdns::Mdns::new(SERVICE_NAME, args.ip, &args.device)?;
+    mdns.insert_host(
         "test.genmeta.net".to_string(),
         vec![
             "192.168.1.7:7000".parse().unwrap(),
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Error> {
         ],
     );
 
-    mdns.add_host(
+    mdns.insert_host(
         "mdns.test.genmeta.net".to_string(),
         vec![
             "192.168.1.7:7001".parse().unwrap(),

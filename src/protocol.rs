@@ -12,12 +12,14 @@ use futures::{Stream, StreamExt};
 use socket2::{Domain, Socket, Type};
 use thiserror::Error;
 use tokio::{io, net::UdpSocket, task::JoinSet, time};
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::parser::{
     packet::{Packet, WritePacket, be_packet},
     record::endpoint::EndpointAddr,
 };
 
+#[derive(Debug)]
 pub struct MdnsSocket(UdpSocket);
 
 const MULTICAST_PORT: u16 = 5353;
@@ -147,7 +149,7 @@ impl PacketRouter {
         match (packet.header.flags.query(), packet.header.id) {
             (true, 0) => {
                 if let Err(error) = self.responses.0.try_send((source, packet)) {
-                    tracing::debug!(target: "mdns", %error,"Failed to deliver boardcast");
+                    tracing::debug!(target: "mdns", %error, "Failed to deliver boardcast");
                 }
             }
             (true, query_id) => match self.queries.get(&NonZero::new(query_id).unwrap()) {
@@ -175,9 +177,11 @@ impl PacketRouter {
     }
 }
 
+#[derive(Debug)]
 pub struct MdnsProtocol {
-    socket: MdnsSocket,
+    socket: Arc<MdnsSocket>,
     router: Weak<PacketRouter>,
+    _route: AbortOnDropHandle<()>,
 }
 
 #[derive(Debug, Error)]
@@ -192,23 +196,23 @@ impl From<Disconnected> for io::Error {
 
 impl MdnsProtocol {
     pub fn new(device: &str, ip: Ipv4Addr) -> io::Result<Arc<Self>> {
-        let socket = MdnsSocket::new(device, ip)?;
+        let socket = Arc::new(MdnsSocket::new(device, ip)?);
         let router = Arc::new(PacketRouter::new());
-        let proto = Arc::new(Self {
-            socket,
-            router: Arc::downgrade(&router),
-        });
 
-        tokio::spawn({
-            let proto = proto.clone();
+        let route = AbortOnDropHandle::new(tokio::spawn({
+            let socket = socket.clone();
+            let router = router.clone();
             async move {
-                while let Ok((source, packet)) = proto.socket.receive().await {
+                while let Ok((source, packet)) = socket.receive().await {
                     router.deliver(source, packet);
                 }
             }
-        });
-
-        Ok(proto)
+        }));
+        Ok(Arc::new(Self {
+            socket,
+            router: Arc::downgrade(&router),
+            _route: route,
+        }))
     }
 
     pub async fn broadcast_packet(&self, packet: Packet) -> io::Result<()> {

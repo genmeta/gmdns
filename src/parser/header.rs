@@ -1,3 +1,4 @@
+#![allow(clippy::double_parens)]
 use bitfield_struct::bitfield;
 use bytes::BufMut;
 use nom::number::streaming::be_u16;
