@@ -1,7 +1,6 @@
-use bytes::BufMut;
 use nom::number::streaming::be_u16;
 
-use crate::parser::name::{Name, WriteName, be_name, name_encoding_size};
+use crate::parser::name::{Name, be_name};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Srv {
@@ -21,12 +20,16 @@ impl Srv {
         }
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    pub fn priority(&self) -> u16 {
+        self.priority
     }
 
-    pub fn encpding_size(&self) -> usize {
-        6 + name_encoding_size(&self.target)
+    pub fn weight(&self) -> u16 {
+        self.weight
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     pub fn target(&self) -> &Name {
@@ -48,19 +51,6 @@ pub fn be_srv<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], S
             target,
         },
     ))
-}
-
-pub trait WriteSrv {
-    fn put_srv(&mut self, srv: &Srv);
-}
-
-impl<T: BufMut> WriteSrv for T {
-    fn put_srv(&mut self, srv: &Srv) {
-        self.put_u16(srv.priority);
-        self.put_u16(srv.weight);
-        self.put_u16(srv.port);
-        self.put_name(&srv.target);
-    }
 }
 
 #[cfg(test)]

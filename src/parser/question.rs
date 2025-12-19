@@ -1,9 +1,7 @@
-use bytes::BufMut;
 use nom::number::streaming::be_u16;
 use tokio::io;
 
 use super::name::{Name, be_name};
-use crate::parser::name::WriteName;
 
 ///
 /// ```text
@@ -173,20 +171,4 @@ pub fn be_question<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u
             qclass,
         },
     ))
-}
-
-pub trait WriteQuestion {
-    fn put_question(&mut self, question: &Question);
-}
-
-impl<T: BufMut> WriteQuestion for T {
-    fn put_question(&mut self, question: &Question) {
-        self.put_name(&question.name);
-        self.put_u16(question.qtype.into());
-        let mut qclass = question.qclass.into();
-        if question.prefer_unicast {
-            qclass |= 0x8000;
-        }
-        self.put_u16(qclass);
-    }
 }

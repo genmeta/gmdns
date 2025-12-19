@@ -3,8 +3,8 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
 };
 
-use bytes::{Buf, BufMut};
-use endpoint::{EndpointAddr, WriteEndpointAddr, be_endpoint_addr};
+use bytes::Buf;
+use endpoint::{EndpointAddr, be_endpoint_addr_compat};
 use nom::{
     Parser,
     bytes::streaming::take,
@@ -12,12 +12,11 @@ use nom::{
     number::streaming::{be_u16, be_u32, be_u128},
 };
 use ptr::{Ptr, be_ptr};
-use srv::{Srv, WriteSrv, be_srv};
+use srv::{Srv, be_srv};
 use tokio::io;
 use txt::Txt;
 
-use super::name::{Name, be_name, name_encoding_size};
-use crate::parser::{name::WriteName, record::ptr::WritePtr};
+use super::name::{Name, be_name};
 
 pub mod endpoint;
 pub mod ptr;
@@ -219,23 +218,6 @@ impl Display for RData {
     }
 }
 
-impl RData {
-    pub fn encpding_size(&self) -> usize {
-        match self {
-            RData::A(_ip) => 4,
-            RData::AAAA(_ip) => 16,
-            RData::CName(name) => name_encoding_size(name),
-            RData::Txt(txt) => txt.len(),
-            RData::Srv(srv) => srv.encpding_size(),
-            RData::Ptr(ptr) => ptr.encpding_size(),
-            RData::E(e) => e.encpding_size(),
-            RData::E6(e) => e.encpding_size(),
-            RData::EE(e) => e.encpding_size(),
-            RData::EE6(e) => e.encpding_size(),
-        }
-    }
-}
-
 pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8], ResourceRecord> {
     let (remain, name) = be_name(input, origin)?;
     let (remain, typ) = be_u16(remain)?;
@@ -316,49 +298,46 @@ fn be_rdata<'a>(
         }
         Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
         Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
-        Type::E => be_endpoint_addr(input, false, false).map(|(remain, e)| (remain, RData::E(e))),
-        Type::E6 => be_endpoint_addr(input, false, true).map(|(remain, e)| (remain, RData::E6(e))),
-        Type::EE => be_endpoint_addr(input, true, false).map(|(remain, e)| (remain, RData::EE(e))),
-        Type::EE6 => be_endpoint_addr(input, true, true).map(|(remain, e)| (remain, RData::EE6(e))),
+        Type::E => be_endpoint_addr_compat(input, false, false, rdlen)
+            .map(|(remain, e)| (remain, RData::E(e))),
+        Type::E6 => be_endpoint_addr_compat(input, false, true, rdlen)
+            .map(|(remain, e)| (remain, RData::E6(e))),
+        Type::EE => be_endpoint_addr_compat(input, true, false, rdlen)
+            .map(|(remain, e)| (remain, RData::EE(e))),
+        Type::EE6 => be_endpoint_addr_compat(input, true, true, rdlen)
+            .map(|(remain, e)| (remain, RData::EE6(e))),
     }
 }
 
-pub trait WriteRecord {
-    fn put_record(&mut self, record: &ResourceRecord);
-}
+#[cfg(test)]
+mod test {
+    use super::*;
 
-impl<T: BufMut> WriteRecord for T {
-    fn put_record(&mut self, record: &ResourceRecord) {
-        self.put_name(&record.name);
-        self.put_u16(record.typ.into());
-        let mut cls = record.cls.into();
-        if record.multicast_unique {
-            cls |= 0x8000;
-        }
-        self.put_u16(cls);
-        self.put_u32(record.ttl);
-        self.put_u16(record.data.encpding_size() as u16);
-        self.put_rdata(&record.data);
+    fn record_prefix_for_a(name: &[u8], rdlen: u16) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(name);
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(&rdlen.to_be_bytes());
+        buf
     }
-}
 
-pub trait WriteRData {
-    fn put_rdata(&mut self, rdata: &RData);
-}
+    #[test]
+    fn parse_record_incomplete_rdata_returns_incomplete() {
+        let name = b"\x07example\x03com\x00";
+        let mut buf = record_prefix_for_a(name, 4);
+        buf.extend_from_slice(&[127, 0, 0]);
+        let ret = be_record(&buf, &buf);
+        assert!(matches!(ret, Err(nom::Err::Incomplete(_))));
+    }
 
-impl<T: BufMut> WriteRData for T {
-    fn put_rdata(&mut self, rdata: &RData) {
-        match rdata {
-            RData::A(ip) => self.put_slice(&ip.octets()),
-            RData::AAAA(ip) => self.put_slice(&ip.octets()),
-            RData::CName(name) => self.put_name(name),
-            RData::Txt(txt) => self.put_slice(txt),
-            RData::Srv(srv) => self.put_srv(srv),
-            RData::Ptr(ptr) => self.put_ptr(ptr),
-            RData::E(e) => self.put_endpoint_addr(e),
-            RData::E6(e) => self.put_endpoint_addr(e),
-            RData::EE(e) => self.put_endpoint_addr(e),
-            RData::EE6(e) => self.put_endpoint_addr(e),
-        }
+    #[test]
+    fn parse_record_extra_rdata_bytes_is_error() {
+        let name = b"\x07example\x03com\x00";
+        let mut buf = record_prefix_for_a(name, 5);
+        buf.extend_from_slice(&[127, 0, 0, 1, 9]);
+        let ret = be_record(&buf, &buf);
+        assert!(matches!(ret, Err(nom::Err::Error(_))));
     }
 }

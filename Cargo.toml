@@ -34,3 +34,6 @@ path = "examples/query.rs"
 name = "discover"
 path = "examples/discover.rs"
 
+[[bench]]
+name = "name_compression"
+harness = false

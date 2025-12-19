@@ -9,8 +9,8 @@ use super::{
 };
 use crate::parser::{
     header::WriteHeader,
-    question::WriteQuestion,
-    record::{Type, WriteRecord, be_record},
+    name::{NameCompression, put_name},
+    record::{Type, be_record, endpoint::WriteEndpointAddr, srv::Srv},
 };
 
 /// Parsed DNS packet
@@ -57,6 +57,35 @@ impl Packet {
         packet
     }
 
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(2048);
+        let mut ctx = NameCompression::new();
+
+        buf.put_header(&self.header);
+
+        for question in &self.questions {
+            let _ = put_name(&mut buf, &question.name, &mut ctx);
+            buf.put_u16(question.qtype.into());
+            let mut qclass = u16::from(question.qclass);
+            if question.prefer_unicast {
+                qclass |= 0x8000;
+            }
+            buf.put_u16(qclass);
+        }
+
+        for answer in &self.answers {
+            put_record(&mut buf, answer, &mut ctx);
+        }
+        for nameserver in &self.nameservers {
+            put_record(&mut buf, nameserver, &mut ctx);
+        }
+        for additional in &self.additional {
+            put_record(&mut buf, additional, &mut ctx);
+        }
+
+        buf
+    }
+
     fn add_question(
         &mut self,
         qname: &str,
@@ -88,6 +117,49 @@ impl Packet {
         self.header.answers_count += 1;
         self.answers.push(response);
     }
+}
+
+fn put_record(buf: &mut Vec<u8>, record: &ResourceRecord, ctx: &mut NameCompression) {
+    let _ = put_name(buf, &record.name, ctx);
+    buf.put_u16(u16::from(record.typ));
+
+    let mut cls = u16::from(record.cls);
+    if record.multicast_unique {
+        cls |= 0x8000;
+    }
+    buf.put_u16(cls);
+
+    buf.put_u32(record.ttl);
+
+    let rdlen_pos = buf.len();
+    buf.put_u16(0);
+    let rdata_start = buf.len();
+
+    match &record.data {
+        RData::A(ip) => buf.put_slice(&ip.octets()),
+        RData::AAAA(ip) => buf.put_slice(&ip.octets()),
+        RData::CName(name) => {
+            let _ = put_name(buf, name, ctx);
+        }
+        RData::Txt(txt) => buf.put_slice(txt),
+        RData::Srv(srv) => put_srv(buf, srv, ctx),
+        RData::Ptr(ptr) => {
+            let _ = put_name(buf, ptr.name(), ctx);
+        }
+        RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => buf.put_endpoint_addr(e),
+    }
+
+    let rdlen = (buf.len() - rdata_start) as u16;
+    let [hi, lo] = rdlen.to_be_bytes();
+    buf[rdlen_pos] = hi;
+    buf[rdlen_pos + 1] = lo;
+}
+
+fn put_srv(buf: &mut Vec<u8>, srv: &Srv, ctx: &mut NameCompression) {
+    buf.put_u16(srv.priority());
+    buf.put_u16(srv.weight());
+    buf.put_u16(srv.port());
+    let _ = put_name(buf, srv.target(), ctx);
 }
 
 pub fn be_packet(input: &[u8]) -> nom::IResult<&[u8], Packet> {
@@ -138,33 +210,9 @@ fn parse<'a, T>(
     Ok((input, records))
 }
 
-pub trait WritePacket {
-    fn put_packet(&mut self, packet: &Packet);
-}
-
-impl<T: BufMut> WritePacket for T {
-    fn put_packet(&mut self, packet: &Packet) {
-        self.put_header(&packet.header);
-        for question in &packet.questions {
-            self.put_question(question);
-        }
-        for answer in &packet.answers {
-            self.put_record(answer);
-        }
-        for nameserver in &packet.nameservers {
-            self.put_record(nameserver);
-        }
-        for additional in &packet.additional {
-            self.put_record(additional);
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-    use bytes::BytesMut;
 
     use super::*;
     use crate::parser::{
@@ -172,6 +220,33 @@ mod test {
         question::{QueryClass, QueryType},
         record::{Class, RData, Type, srv::Srv},
     };
+
+    fn decode_hex(s: &str) -> Vec<u8> {
+        let mut out = Vec::with_capacity(s.len() / 2);
+        let mut n = 0u8;
+        let mut high = true;
+        for b in s.bytes() {
+            let v = match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                b'A'..=b'F' => b - b'A' + 10,
+                b' ' | b'\n' | b'\r' | b'\t' => continue,
+                _ => panic!("invalid hex"),
+            };
+            if high {
+                n = v << 4;
+                high = false;
+            } else {
+                n |= v;
+                out.push(n);
+                high = true;
+            }
+        }
+        if !high {
+            panic!("odd hex length");
+        }
+        out
+    }
 
     #[test]
     fn parse_example_query() {
@@ -300,9 +375,7 @@ mod test {
             300,
             parser::record::RData::Srv(srv),
         );
-        let mut buf = BytesMut::with_capacity(512);
-        buf.put_packet(&response);
-        let packet = buf.freeze();
+        let packet = response.to_bytes();
         let (_, parsed_packet) = be_packet(&packet).unwrap();
         assert_eq!(parsed_packet.header.id, response.header.id);
         assert_eq!(
@@ -313,5 +386,53 @@ mod test {
         assert_eq!(parsed_packet.nameservers.len(), response.nameservers.len());
         assert_eq!(parsed_packet.additional.len(), response.additional.len());
         assert_eq!(parsed_packet.answers[0].name, response.answers[0].name);
+    }
+
+    #[test]
+    fn malformed_packet_does_not_panic() {
+        let packet_hex = "0021641c0000000100000000000078787878787878787878787303636f6d0000100001";
+        let data = decode_hex(packet_hex);
+        let ret = std::panic::catch_unwind(|| {
+            let _ = be_packet(&data);
+        });
+        assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn packet_with_unknown_rr_type_does_not_panic() {
+        let packet_hex = "8116840000010001000000000569627a6c700474657374046d69656b026e6c00000a0001c00c000a0001000000000005497f000001";
+        let data = decode_hex(packet_hex);
+        let ret = std::panic::catch_unwind(|| be_packet(&data));
+        assert!(ret.is_ok());
+        let (_, packet) = be_packet(&data).unwrap();
+        assert_eq!(packet.header.questions_count, 1);
+        assert_eq!(packet.header.answers_count, 1);
+        assert!(packet.answers.is_empty());
+    }
+
+    #[test]
+    fn packet_to_bytes_uses_name_compression_across_sections() {
+        let mut packet = Packet::default();
+        packet.add_question("www.skype.com", QueryType::A, QueryClass::IN, false);
+        packet.add_answer(
+            "mail.skype.com",
+            Type::A,
+            Class::IN,
+            1,
+            RData::A(Ipv4Addr::new(1, 2, 3, 4)),
+        );
+
+        let bytes = packet.to_bytes();
+        let mail_pos = bytes
+            .windows(5)
+            .position(|w| w == b"\x04mail")
+            .expect("mail label missing");
+        let skype_pos = bytes
+            .windows(6)
+            .position(|w| w == b"\x05skype")
+            .expect("skype label missing");
+
+        let ptr = (0xC000u16 | (skype_pos as u16)).to_be_bytes();
+        assert_eq!(&bytes[mail_pos + 5..mail_pos + 7], &ptr);
     }
 }
