@@ -261,8 +261,11 @@ impl MdnsProtocol {
                         }
                         answer.name == local_name
                     })
-                    .filter_map(|answer| match answer.data {
-                        E(e) | EE(e) | E6(e) | EE6(e) => Some(e),
+                    .filter_map(|answer| match &answer.data {
+                        E(e) => Some(e.clone()),
+                        EE(e) => Some(e.clone()),
+                        E6(e) => Some(e.clone()),
+                        EE6(e) => Some(e.clone()),
                         _ => {
                             tracing::debug!(target: "mdns", ?answer, "Ignored record");
                             None

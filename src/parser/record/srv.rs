@@ -1,7 +1,7 @@
 use bytes::BufMut;
 use nom::number::streaming::be_u16;
 
-use crate::parser::name::{Name, WriteName, be_name};
+use crate::parser::name::{Name, WriteName, be_name, name_encoding_size};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Srv {
@@ -26,7 +26,7 @@ impl Srv {
     }
 
     pub fn encpding_size(&self) -> usize {
-        6 + self.target.len()
+        6 + name_encoding_size(&self.target)
     }
 
     pub fn target(&self) -> &Name {

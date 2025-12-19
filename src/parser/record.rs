@@ -16,7 +16,7 @@ use srv::{Srv, WriteSrv, be_srv};
 use tokio::io;
 use txt::Txt;
 
-use super::name::{Name, be_name};
+use super::name::{Name, be_name, name_encoding_size};
 use crate::parser::{name::WriteName, record::ptr::WritePtr};
 
 pub mod endpoint;
@@ -224,7 +224,7 @@ impl RData {
         match self {
             RData::A(_ip) => 4,
             RData::AAAA(_ip) => 16,
-            RData::CName(name) => name.len(),
+            RData::CName(name) => name_encoding_size(name),
             RData::Txt(txt) => txt.len(),
             RData::Srv(srv) => srv.encpding_size(),
             RData::Ptr(ptr) => ptr.encpding_size(),
@@ -255,7 +255,21 @@ pub fn be_record<'a>(input: &'a [u8], origin: &'a [u8]) -> nom::IResult<&'a [u8]
             nom::error::ErrorKind::Alt,
         )));
     };
-    let (mut remain, rdata) = be_rdata(remain, origin, typ, rdlen)?;
+
+    if remain.len() < rdlen as usize {
+        return Err(nom::Err::Incomplete(nom::Needed::new(
+            rdlen as usize - remain.len(),
+        )));
+    }
+    let (remain_after_rdata, rdata_bytes) = take(rdlen)(remain)?;
+    let (rdata_remain, rdata) = be_rdata(rdata_bytes, origin, typ, rdlen)?;
+    if !rdata_remain.is_empty() {
+        return Err(nom::Err::Error(nom::error::make_error(
+            remain_after_rdata,
+            nom::error::ErrorKind::Eof,
+        )));
+    }
+    let mut remain = remain_after_rdata;
 
     let multicast_unique = cls & 0x8000 == 0x8000;
     let cls = cls & 0x7FFF;
