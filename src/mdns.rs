@@ -116,8 +116,8 @@ impl Mdns {
         let eps = host_addr
             .into_iter()
             .map(|addr| match addr {
-                SocketAddr::V4(addr) => EndpointAddr::E(addr),
-                SocketAddr::V6(addr) => EndpointAddr::E6(addr),
+                SocketAddr::V4(addr) => EndpointAddr::direct_v4(addr),
+                SocketAddr::V6(addr) => EndpointAddr::direct_v6(addr),
             })
             .collect::<Vec<_>>();
         guard.insert(local_name, eps);

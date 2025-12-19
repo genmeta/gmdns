@@ -46,10 +46,10 @@ impl Packet {
         hosts.iter().for_each(|(name, eps)| {
             eps.iter().for_each(|ep| {
                 let (rtype, rdata) = match ep {
-                    EndpointAddr::E(..) => (Type::E, RData::E(*ep)),
-                    EndpointAddr::E6(..) => (Type::E6, RData::E6(*ep)),
-                    EndpointAddr::EE(..) => (Type::EE, RData::EE(*ep)),
-                    EndpointAddr::EE6(..) => (Type::EE6, RData::EE6(*ep)),
+                    EndpointAddr::E { .. } => (Type::E, RData::E(ep.clone())),
+                    EndpointAddr::E6 { .. } => (Type::E6, RData::E6(ep.clone())),
+                    EndpointAddr::EE { .. } => (Type::EE, RData::EE(ep.clone())),
+                    EndpointAddr::EE6 { .. } => (Type::EE6, RData::EE6(ep.clone())),
                 };
                 packet.add_answer(name, rtype, Class::IN, 300, rdata);
             });

@@ -6,39 +6,258 @@ use std::{
 use bytes::BufMut;
 use nom::{
     IResult, Parser,
+    bytes::streaming::take,
     combinator::{flat_map, map},
-    number::streaming::{be_u16, be_u32, be_u128},
+    error::{ErrorKind, make_error},
+    number::streaming::{be_u8, be_u16, be_u32, be_u128},
 };
+use rustls::{SignatureScheme, pki_types::SubjectPublicKeyInfoDer, sign::SigningKey};
+
+use crate::parser::{
+    sigin,
+    varint::{VarInt, WriteVarInt, be_varint},
+};
+
 /// EndpointAddress record
 ///
 /// - E: IPv4 Direct address
 /// - EE: IPv4 Relay address
 /// - E6: IPv6 Direct address
 /// - EE6: IPv6 Relay address
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EndpointMeta {
+    flags: u8,
+    sequence: VarInt,
+    signature: Option<EndpointSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EndpointSignature {
+    scheme: u16,
+    signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
-    E(SocketAddrV4),
-    EE(SocketAddrV4, SocketAddrV4),
-    E6(SocketAddrV6),
-    EE6(SocketAddrV6, SocketAddrV6),
+    /// IPv4 直连地址：`addr`
+    E {
+        meta: EndpointMeta,
+        addr: SocketAddrV4,
+    },
+    /// IPv4 中继地址：`outer` 为外部地址，`agent` 为中继代理地址
+    EE {
+        meta: EndpointMeta,
+        outer: SocketAddrV4,
+        agent: SocketAddrV4,
+    },
+    /// IPv6 直连地址：`addr`
+    E6 {
+        meta: EndpointMeta,
+        addr: SocketAddrV6,
+    },
+    /// IPv6 中继地址：`outer` 为外部地址，`agent` 为中继代理地址
+    EE6 {
+        meta: EndpointMeta,
+        outer: SocketAddrV6,
+        agent: SocketAddrV6,
+    },
 }
 
 impl EndpointAddr {
-    pub fn encpding_size(&self) -> usize {
+    const FLAG_MAIN: u8 = 0b1000_0000;
+    const FLAG_ENCRYPTED: u8 = 0b0100_0000;
+
+    pub fn direct_v4(addr: SocketAddrV4) -> Self {
+        Self::E {
+            meta: EndpointMeta {
+                flags: 0,
+                sequence: VarInt::from_u32(0),
+                signature: None,
+            },
+            addr,
+        }
+    }
+
+    pub fn direct_v6(addr: SocketAddrV6) -> Self {
+        Self::E6 {
+            meta: EndpointMeta {
+                flags: 0,
+                sequence: VarInt::from_u32(0),
+                signature: None,
+            },
+            addr,
+        }
+    }
+
+    pub fn relay_v4(outer: SocketAddrV4, agent: SocketAddrV4) -> Self {
+        Self::EE {
+            meta: EndpointMeta {
+                flags: 0,
+                sequence: VarInt::from_u32(0),
+                signature: None,
+            },
+            outer,
+            agent,
+        }
+    }
+
+    pub fn relay_v6(outer: SocketAddrV6, agent: SocketAddrV6) -> Self {
+        Self::EE6 {
+            meta: EndpointMeta {
+                flags: 0,
+                sequence: VarInt::from_u32(0),
+                signature: None,
+            },
+            outer,
+            agent,
+        }
+    }
+
+    fn meta(&self) -> &EndpointMeta {
         match self {
-            EndpointAddr::E(..) => 2 + 4,
-            EndpointAddr::EE(..) => 2 + 4 + 2 + 4,
-            EndpointAddr::E6(..) => 2 + 16,
-            EndpointAddr::EE6(..) => 2 + 16 + 2 + 16,
+            EndpointAddr::E { meta, .. } => meta,
+            EndpointAddr::EE { meta, .. } => meta,
+            EndpointAddr::E6 { meta, .. } => meta,
+            EndpointAddr::EE6 { meta, .. } => meta,
+        }
+    }
+
+    fn meta_mut(&mut self) -> &mut EndpointMeta {
+        match self {
+            EndpointAddr::E { meta, .. } => meta,
+            EndpointAddr::EE { meta, .. } => meta,
+            EndpointAddr::E6 { meta, .. } => meta,
+            EndpointAddr::EE6 { meta, .. } => meta,
+        }
+    }
+
+    fn flags(&self) -> u8 {
+        self.meta().flags
+    }
+
+    fn flags_mut(&mut self) -> &mut u8 {
+        &mut self.meta_mut().flags
+    }
+
+    fn sequence(&self) -> VarInt {
+        self.meta().sequence
+    }
+
+    fn signature(&self) -> Option<&EndpointSignature> {
+        self.meta().signature.as_ref()
+    }
+
+    fn signature_mut(&mut self) -> &mut Option<EndpointSignature> {
+        &mut self.meta_mut().signature
+    }
+
+    fn write_base<B: BufMut>(&self, buf: &mut B) {
+        buf.put_u8(self.flags());
+        buf.put_varint(self.sequence());
+        match self {
+            EndpointAddr::E { addr, .. } => buf.put_socket_addr_v4(addr),
+            EndpointAddr::EE { outer, agent, .. } => {
+                buf.put_socket_addr_v4(outer);
+                buf.put_socket_addr_v4(agent);
+            }
+            EndpointAddr::E6 { addr, .. } => buf.put_socket_addr_v6(addr),
+            EndpointAddr::EE6 { outer, agent, .. } => {
+                buf.put_socket_addr_v6(outer);
+                buf.put_socket_addr_v6(agent);
+            }
+        }
+    }
+
+    fn signed_data(&self) -> Vec<u8> {
+        let mut unsigned = self.clone();
+        unsigned.set_encrypted(true);
+        *unsigned.signature_mut() = None;
+        let mut buf = bytes::BytesMut::with_capacity(unsigned.encpding_size());
+        unsigned.write_base(&mut buf);
+        buf.to_vec()
+    }
+
+    pub fn sign_with(
+        &mut self,
+        key: &(impl SigningKey + ?Sized),
+        scheme: SignatureScheme,
+    ) -> Result<(), sigin::SignError> {
+        self.set_encrypted(true);
+        let data = self.signed_data();
+        let signature = sigin::sign(key, scheme, &data)?;
+        *self.signature_mut() = Some(EndpointSignature {
+            scheme: u16::from(scheme),
+            signature,
+        });
+        Ok(())
+    }
+
+    pub fn verify_signature(
+        &self,
+        spki: SubjectPublicKeyInfoDer<'_>,
+    ) -> Result<bool, sigin::VerifyError> {
+        let Some(sig) = self.signature() else {
+            return Ok(false);
+        };
+        let data = self.signed_data();
+        sigin::verify(
+            spki,
+            SignatureScheme::from(sig.scheme),
+            &data,
+            &sig.signature,
+        )
+    }
+
+    pub fn is_main(&self) -> bool {
+        self.flags() & Self::FLAG_MAIN == Self::FLAG_MAIN
+    }
+
+    pub fn set_main(&mut self, is_main: bool) {
+        let flags = self.flags_mut();
+        if is_main {
+            *flags |= Self::FLAG_MAIN;
+        } else {
+            *flags &= !Self::FLAG_MAIN;
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.flags() & Self::FLAG_ENCRYPTED == Self::FLAG_ENCRYPTED
+    }
+
+    pub fn set_encrypted(&mut self, is_encrypted: bool) {
+        let flags = self.flags_mut();
+        if is_encrypted {
+            *flags |= Self::FLAG_ENCRYPTED;
+        } else {
+            *flags &= !Self::FLAG_ENCRYPTED;
+        }
+    }
+
+    pub fn encpding_size(&self) -> usize {
+        let mut meta_len = 1 + self.sequence().encoding_size();
+        if self.is_encrypted()
+            && let Some(sig) = self.signature()
+        {
+            let sig_len =
+                VarInt::try_from(sig.signature.len() as u64).unwrap_or(VarInt::from_u32(0));
+            meta_len += 2 + sig_len.encoding_size() + sig.signature.len();
+        }
+
+        match self {
+            EndpointAddr::E { .. } => meta_len + 2 + 4,
+            EndpointAddr::EE { .. } => meta_len + 2 + 4 + 2 + 4,
+            EndpointAddr::E6 { .. } => meta_len + 2 + 16,
+            EndpointAddr::EE6 { .. } => meta_len + 2 + 16 + 2 + 16,
         }
     }
 
     pub fn addr(&self) -> SocketAddr {
         match self {
-            EndpointAddr::E(addr) => (*addr).into(),
-            EndpointAddr::EE(outer, _) => (*outer).into(),
-            EndpointAddr::E6(addr) => (*addr).into(),
-            EndpointAddr::EE6(outer, _) => (*outer).into(),
+            EndpointAddr::E { addr, .. } => (*addr).into(),
+            EndpointAddr::EE { outer, .. } => (*outer).into(),
+            EndpointAddr::E6 { addr, .. } => (*addr).into(),
+            EndpointAddr::EE6 { outer, .. } => (*outer).into(),
         }
     }
 }
@@ -49,17 +268,14 @@ pub(crate) trait WriteEndpointAddr {
 
 impl<B: BufMut> WriteEndpointAddr for B {
     fn put_endpoint_addr(&mut self, endpoint: &EndpointAddr) {
-        match endpoint {
-            EndpointAddr::E(addr) => self.put_socket_addr_v4(addr),
-            EndpointAddr::EE(outer, agent) => {
-                self.put_socket_addr_v4(outer);
-                self.put_socket_addr_v4(agent);
-            }
-            EndpointAddr::E6(addr) => self.put_socket_addr_v6(addr),
-            EndpointAddr::EE6(outer, agent) => {
-                self.put_socket_addr_v6(outer);
-                self.put_socket_addr_v6(agent);
-            }
+        endpoint.write_base(self);
+        if endpoint.is_encrypted()
+            && let Some(sig) = endpoint.signature()
+        {
+            self.put_u16(sig.scheme);
+            let len = VarInt::try_from(sig.signature.len() as u64).unwrap_or(VarInt::from_u32(0));
+            self.put_varint(len);
+            self.put_slice(&sig.signature);
         }
     }
 }
@@ -69,26 +285,76 @@ pub fn be_endpoint_addr(
     is_relay: bool,
     is_ipv6: bool,
 ) -> nom::IResult<&[u8], EndpointAddr> {
+    let (remain, flags) = be_u8(input)?;
+    let (remain, sequence) = be_varint(remain)?;
     match (is_relay, is_ipv6) {
         (true, true) => {
-            let (remain, outer) = be_socket_addr_v6(input)?;
+            let (remain, outer) = be_socket_addr_v6(remain)?;
             let (remain, agent) = be_socket_addr_v6(remain)?;
-            Ok((remain, EndpointAddr::EE6(outer, agent)))
+            let (remain, meta) = be_endpoint_meta(remain, flags, sequence)?;
+            Ok((remain, EndpointAddr::EE6 { meta, outer, agent }))
         }
         (true, false) => {
-            let (remain, outer) = be_socket_addr_v4(input)?;
+            let (remain, outer) = be_socket_addr_v4(remain)?;
             let (remain, agent) = be_socket_addr_v4(remain)?;
-            Ok((remain, EndpointAddr::EE(outer, agent)))
+            let (remain, meta) = be_endpoint_meta(remain, flags, sequence)?;
+            Ok((remain, EndpointAddr::EE { meta, outer, agent }))
         }
         (false, true) => {
-            let (remain, addr) = be_socket_addr_v6(input)?;
-            Ok((remain, EndpointAddr::E6(addr)))
+            let (remain, addr) = be_socket_addr_v6(remain)?;
+            let (remain, meta) = be_endpoint_meta(remain, flags, sequence)?;
+            Ok((remain, EndpointAddr::E6 { meta, addr }))
         }
         (false, false) => {
-            let (remain, addr) = be_socket_addr_v4(input)?;
-            Ok((remain, EndpointAddr::E(addr)))
+            let (remain, addr) = be_socket_addr_v4(remain)?;
+            let (remain, meta) = be_endpoint_meta(remain, flags, sequence)?;
+            Ok((remain, EndpointAddr::E { meta, addr }))
         }
     }
+}
+
+fn be_endpoint_meta(input: &[u8], flags: u8, sequence: VarInt) -> IResult<&[u8], EndpointMeta> {
+    if (flags & EndpointAddr::FLAG_ENCRYPTED) != EndpointAddr::FLAG_ENCRYPTED {
+        if !input.is_empty() {
+            return Err(nom::Err::Error(make_error(input, ErrorKind::Eof)));
+        }
+        return Ok((
+            input,
+            EndpointMeta {
+                flags,
+                sequence,
+                signature: None,
+            },
+        ));
+    }
+
+    if input.is_empty() {
+        return Ok((
+            input,
+            EndpointMeta {
+                flags,
+                sequence,
+                signature: None,
+            },
+        ));
+    }
+
+    let (remain, scheme_u16) = be_u16(input)?;
+    let (remain, sig_len) = be_varint(remain)?;
+    let sig_len = usize::try_from(sig_len.into_inner())
+        .map_err(|_| nom::Err::Error(make_error(remain, ErrorKind::TooLarge)))?;
+    let (remain, sig) = take(sig_len)(remain)?;
+    Ok((
+        remain,
+        EndpointMeta {
+            flags,
+            sequence,
+            signature: Some(EndpointSignature {
+                scheme: scheme_u16,
+                signature: sig.to_vec(),
+            }),
+        },
+    ))
 }
 
 pub trait WriteSocketAddr {
@@ -148,10 +414,236 @@ pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
 impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EndpointAddr::E(addr) => write!(f, "{addr}"),
-            EndpointAddr::EE(outer, agent) => write!(f, "{outer}-{agent}"),
-            EndpointAddr::E6(addr) => write!(f, "{addr}"),
-            EndpointAddr::EE6(outer, agent) => write!(f, "{outer}-{agent}"),
+            EndpointAddr::E { addr, .. } => write!(f, "{addr}"),
+            EndpointAddr::EE { outer, agent, .. } => write!(f, "{outer}-{agent}"),
+            EndpointAddr::E6 { addr, .. } => write!(f, "{addr}"),
+            EndpointAddr::EE6 { outer, agent, .. } => write!(f, "{outer}-{agent}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+    };
+
+    use bytes::BytesMut;
+    use ring::signature::KeyPair;
+    use rustls::sign::Signer;
+
+    use super::*;
+
+    #[test]
+    fn flag_bit_ops_work() {
+        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5353);
+        let mut ep = EndpointAddr::E {
+            meta: EndpointMeta {
+                flags: 0b0011_1111,
+                sequence: VarInt::from_u32(0),
+                signature: None,
+            },
+            addr,
+        };
+
+        assert!(!ep.is_main());
+        assert!(!ep.is_encrypted());
+
+        ep.set_main(true);
+        assert!(ep.is_main());
+        assert_eq!(ep.meta().flags, 0b1011_1111);
+
+        ep.set_encrypted(true);
+        assert!(ep.is_encrypted());
+        assert_eq!(ep.meta().flags, 0b1111_1111);
+
+        ep.set_main(false);
+        assert!(!ep.is_main());
+        assert!(ep.is_encrypted());
+        assert_eq!(ep.meta().flags, 0b0111_1111);
+
+        ep.set_encrypted(false);
+        assert!(!ep.is_encrypted());
+        assert_eq!(ep.meta().flags, 0b0011_1111);
+    }
+
+    #[test]
+    fn varint_roundtrip_and_len() {
+        fn roundtrip(v: u64) {
+            let v = VarInt::from_u64(v).unwrap();
+            let mut buf = BytesMut::new();
+            buf.put_varint(v);
+            assert_eq!(buf.len(), v.encoding_size());
+            let (remain, decoded) = be_varint(&buf).unwrap();
+            assert!(remain.is_empty());
+            assert_eq!(decoded, v);
+        }
+
+        for v in [
+            0u64,
+            1,
+            63,
+            64,
+            16383,
+            16384,
+            (1 << 30) - 1,
+            1 << 30,
+            (1 << 62) - 1,
+        ] {
+            roundtrip(v);
+        }
+    }
+
+    #[test]
+    fn varint_rejects_overflow_and_incomplete() {
+        assert!(VarInt::from_u64((1 << 62) + 1).is_err());
+
+        let incomplete = [0b01_000000u8];
+        match be_varint(&incomplete) {
+            Err(nom::Err::Incomplete(_)) => {}
+            other => panic!("expected Incomplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_encode_decode_roundtrip() {
+        let v4_outer = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 1000);
+        let v4_agent = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 2000);
+        let v6_outer = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 3000, 0, 0);
+        let v6_agent = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 4000, 0, 0);
+
+        let cases = [
+            (
+                EndpointAddr::E {
+                    meta: EndpointMeta {
+                        flags: 0b1100_0000,
+                        sequence: VarInt::from_u32(0),
+                        signature: None,
+                    },
+                    addr: v4_outer,
+                },
+                false,
+                false,
+            ),
+            (
+                EndpointAddr::EE {
+                    meta: EndpointMeta {
+                        flags: 0b0100_0000,
+                        sequence: VarInt::from_u32(127),
+                        signature: None,
+                    },
+                    outer: v4_outer,
+                    agent: v4_agent,
+                },
+                true,
+                false,
+            ),
+            (
+                EndpointAddr::E6 {
+                    meta: EndpointMeta {
+                        flags: 0b1000_0000,
+                        sequence: VarInt::from_u32(128),
+                        signature: None,
+                    },
+                    addr: v6_outer,
+                },
+                false,
+                true,
+            ),
+            (
+                EndpointAddr::EE6 {
+                    meta: EndpointMeta {
+                        flags: 0,
+                        sequence: VarInt::from_u64((1 << 62) - 1).unwrap(),
+                        signature: None,
+                    },
+                    outer: v6_outer,
+                    agent: v6_agent,
+                },
+                true,
+                true,
+            ),
+        ];
+
+        for (ep, is_relay, is_ipv6) in cases {
+            let mut buf = BytesMut::new();
+            buf.put_endpoint_addr(&ep);
+            assert_eq!(buf.len(), ep.encpding_size());
+
+            let (remain, decoded) = be_endpoint_addr(&buf, is_relay, is_ipv6).unwrap();
+            assert!(remain.is_empty());
+            assert_eq!(decoded, ep);
+        }
+    }
+
+    #[test]
+    fn endpoint_signature_roundtrip_and_verify() {
+        #[derive(Debug)]
+        struct Ed25519Key(Arc<ring::signature::Ed25519KeyPair>);
+
+        #[derive(Debug)]
+        struct Ed25519Signer(Arc<ring::signature::Ed25519KeyPair>);
+
+        impl Signer for Ed25519Signer {
+            fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+                Ok(self.0.sign(message).as_ref().to_vec())
+            }
+
+            fn scheme(&self) -> SignatureScheme {
+                SignatureScheme::ED25519
+            }
+        }
+
+        impl SigningKey for Ed25519Key {
+            fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
+                offered
+                    .contains(&SignatureScheme::ED25519)
+                    .then(|| Box::new(Ed25519Signer(self.0.clone())) as Box<dyn Signer>)
+            }
+
+            fn algorithm(&self) -> rustls::SignatureAlgorithm {
+                rustls::SignatureAlgorithm::ED25519
+            }
+        }
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let keypair =
+            Arc::new(ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap());
+        let key = Ed25519Key(keypair.clone());
+
+        let mut spki = Vec::with_capacity(44);
+        spki.extend_from_slice(&[
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ]);
+        spki.extend_from_slice(keypair.public_key().as_ref());
+
+        let addr = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 5353);
+        let mut ep = EndpointAddr::direct_v4(addr);
+        ep.set_main(true);
+        ep.sign_with(&key, SignatureScheme::ED25519).unwrap();
+
+        let mut buf = BytesMut::new();
+        buf.put_endpoint_addr(&ep);
+        assert_eq!(buf.len(), ep.encpding_size());
+
+        let (remain, decoded) = be_endpoint_addr(&buf, false, false).unwrap();
+        assert!(remain.is_empty());
+        assert!(decoded.is_encrypted());
+        assert!(decoded.signature().is_some());
+        assert!(
+            decoded
+                .verify_signature(SubjectPublicKeyInfoDer::from(spki.as_slice()))
+                .unwrap()
+        );
+
+        let mut tampered = decoded.clone();
+        tampered.set_main(false);
+        assert!(
+            !tampered
+                .verify_signature(SubjectPublicKeyInfoDer::from(spki.as_slice()))
+                .unwrap()
+        );
     }
 }
