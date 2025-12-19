@@ -15,7 +15,7 @@ use tokio::{io, net::UdpSocket, task::JoinSet, time};
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::parser::{
-    packet::{Packet, WritePacket, be_packet},
+    packet::{Packet, be_packet},
     record::endpoint::EndpointAddr,
 };
 
@@ -62,8 +62,7 @@ impl MdnsSocket {
     }
 
     pub async fn broadcast_packet(&self, packet: Packet) -> io::Result<()> {
-        let mut buf = Vec::with_capacity(2048);
-        buf.put_packet(&packet);
+        let buf = packet.to_bytes();
         self.0
             .send_to(&buf, (MULTICAST_ADDR, MULTICAST_PORT))
             .await?;
