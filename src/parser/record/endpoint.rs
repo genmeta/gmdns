@@ -49,29 +49,21 @@ use crate::parser::{
 /// - `signature`: 当 `SIGNED` 置位时，允许附加签名字段
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EndpointMeta {
-    flags: u8,
-    sequence: VarInt,
-    signature: Option<EndpointSignature>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EndpointSignature {
     scheme: u16,
     signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EndpointAddr {
-    /// 统一的端点地址格式
-    /// 通过 flags 区分 IPv4/IPv6 和直连/中转
-    Endpoint {
-        meta: EndpointMeta,
-        /// 主地址 (直连时为唯一地址，中转时为外部地址)
-        primary: SocketAddr,
-        /// 代理地址 (仅中转时使用)
-        agent: Option<SocketAddr>,
-    },
+pub struct EndpointAddr {
+    flags: u8,
+    /// 序号，用于多路径连接，None 表示无序号
+    sequence: Option<VarInt>,
+    signature: Option<EndpointSignature>,
+    /// 主地址 (直连时为唯一地址，中转时为外部地址)
+    pub primary: SocketAddr,
+    /// 代理地址 (仅中转时使用)
+    pub agent: Option<SocketAddr>,
 }
 
 impl EndpointAddr {
@@ -82,48 +74,40 @@ impl EndpointAddr {
     const FLAG_FORWARD: u8 = 0b0000_1000; // 0=直连, 1=中转
 
     pub fn direct_v4(addr: SocketAddrV4) -> Self {
-        Self::Endpoint {
-            meta: EndpointMeta {
-                flags: 0, // IPv4 直连: family=0, forward=0
-                sequence: VarInt::from_u32(0),
-                signature: None,
-            },
+        Self {
+            flags: 0, // IPv4 直连: family=0, forward=0
+            sequence: None,
+            signature: None,
             primary: addr.into(),
             agent: None,
         }
     }
 
     pub fn direct_v6(addr: SocketAddrV6) -> Self {
-        Self::Endpoint {
-            meta: EndpointMeta {
-                flags: Self::FLAG_FAMILY, // IPv6 直连: family=1, forward=0
-                sequence: VarInt::from_u32(0),
-                signature: None,
-            },
+        Self {
+            flags: Self::FLAG_FAMILY, // IPv6 直连: family=1, forward=0
+            sequence: None,
+            signature: None,
             primary: addr.into(),
             agent: None,
         }
     }
 
     pub fn relay_v4(outer: SocketAddrV4, agent: SocketAddrV4) -> Self {
-        Self::Endpoint {
-            meta: EndpointMeta {
-                flags: Self::FLAG_FORWARD, // IPv4 中转: family=0, forward=1
-                sequence: VarInt::from_u32(0),
-                signature: None,
-            },
+        Self {
+            flags: Self::FLAG_FORWARD, // IPv4 中转: family=0, forward=1
+            sequence: None,
+            signature: None,
             primary: outer.into(),
             agent: Some(agent.into()),
         }
     }
 
     pub fn relay_v6(outer: SocketAddrV6, agent: SocketAddrV6) -> Self {
-        Self::Endpoint {
-            meta: EndpointMeta {
-                flags: Self::FLAG_FAMILY | Self::FLAG_FORWARD, // IPv6 中转: family=1, forward=1
-                sequence: VarInt::from_u32(0),
-                signature: None,
-            },
+        Self {
+            flags: Self::FLAG_FAMILY | Self::FLAG_FORWARD, // IPv6 中转: family=1, forward=1
+            sequence: None,
+            signature: None,
             primary: outer.into(),
             agent: Some(agent.into()),
         }
@@ -131,25 +115,25 @@ impl EndpointAddr {
 
     /// 是否为 IPv6 地址
     pub fn is_ipv6(&self) -> bool {
-        self.flags() & Self::FLAG_FAMILY != 0
+        self.flags & Self::FLAG_FAMILY != 0
     }
 
     /// 是否为中转地址
     pub fn is_relay(&self) -> bool {
-        self.flags() & Self::FLAG_FORWARD != 0
+        self.flags & Self::FLAG_FORWARD != 0
     }
 
     /// 是否有序号
     pub fn is_sequenced(&self) -> bool {
-        self.flags() & Self::FLAG_SEQUENCED != 0
+        self.flags & Self::FLAG_SEQUENCED != 0
     }
 
     pub fn set_sequenced(&mut self, sequenced: bool) {
-        let flags = self.flags_mut();
         if sequenced {
-            *flags |= Self::FLAG_SEQUENCED;
+            self.flags |= Self::FLAG_SEQUENCED;
         } else {
-            *flags &= !Self::FLAG_SEQUENCED;
+            self.flags &= !Self::FLAG_SEQUENCED;
+            self.sequence = None; // 清除序号
         }
     }
 
@@ -161,7 +145,7 @@ impl EndpointAddr {
         self.set_signed(true);
         let data = self.signed_data();
         let signature = sigin::sign(key, scheme, &data)?;
-        *self.signature_mut() = Some(EndpointSignature {
+        self.signature = Some(EndpointSignature {
             scheme: u16::from(scheme),
             signature,
         });
@@ -172,7 +156,7 @@ impl EndpointAddr {
         &self,
         spki: SubjectPublicKeyInfoDer<'_>,
     ) -> Result<bool, sigin::VerifyError> {
-        let Some(sig) = self.signature() else {
+        let Some(sig) = &self.signature else {
             return Ok(false);
         };
         let data = self.signed_data();
@@ -213,13 +197,13 @@ impl EndpointAddr {
     pub fn encpding_size(&self) -> usize {
         let mut meta_len = 1; // flags
         
-        // sequence 只有在 SEQUENCED 标志位设置时才编码
-        if self.is_sequenced() {
-            meta_len += self.sequence().encoding_size();
+        // sequence 只有在存在时才编码
+        if let Some(seq) = &self.sequence {
+            meta_len += seq.encoding_size();
         }
         
         if self.is_signed()
-            && let Some(sig) = self.signature()
+            && let Some(sig) = &self.signature
         {
             let sig_len =
                 VarInt::try_from(sig.signature.len() as u64).unwrap_or(VarInt::from_u32(0));
@@ -237,77 +221,54 @@ impl EndpointAddr {
     }
 
     pub fn addr(&self) -> SocketAddr {
-        match self {
-            EndpointAddr::Endpoint { primary, .. } => *primary,
-        }
+        self.primary
     }
 
     pub fn agent_addr(&self) -> Option<SocketAddr> {
-        match self {
-            EndpointAddr::Endpoint { agent, .. } => *agent,
-        }
+        self.agent
     }
 
     pub fn set_sequence(&mut self, sequence: u64) {
-        self.meta_mut().sequence = VarInt::from_u64(sequence).expect("Sequence too large");
-        self.set_sequenced(sequence > 0);
-    }
-
-    fn meta(&self) -> &EndpointMeta {
-        match self {
-            EndpointAddr::Endpoint { meta, .. } => meta,
-        }
-    }
-
-    fn meta_mut(&mut self) -> &mut EndpointMeta {
-        match self {
-            EndpointAddr::Endpoint { meta, .. } => meta,
+        if sequence > 0 {
+            self.sequence = Some(VarInt::from_u64(sequence).expect("Sequence too large"));
+            self.set_sequenced(true);
+        } else {
+            self.sequence = None;
+            self.set_sequenced(false);
         }
     }
 
     fn flags(&self) -> u8 {
-        self.meta().flags
+        self.flags
     }
 
     fn flags_mut(&mut self) -> &mut u8 {
-        &mut self.meta_mut().flags
-    }
-
-    fn sequence(&self) -> VarInt {
-        self.meta().sequence
+        &mut self.flags
     }
 
     fn signature(&self) -> Option<&EndpointSignature> {
-        self.meta().signature.as_ref()
-    }
-
-    fn signature_mut(&mut self) -> &mut Option<EndpointSignature> {
-        &mut self.meta_mut().signature
+        self.signature.as_ref()
     }
 
     fn write_base<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u8(self.flags());
+        buf.put_u8(self.flags);
         
-        // 只有在 SEQUENCED 标志位设置时才写入 sequence
-        if self.is_sequenced() {
-            buf.put_varint(self.sequence());
+        // 只有在存在 sequence 时才写入
+        if let Some(seq) = &self.sequence {
+            buf.put_varint(*seq);
         }
         
-        match self {
-            EndpointAddr::Endpoint { primary, agent, .. } => {
-                // 写入主地址
-                match primary {
-                    SocketAddr::V4(addr) => buf.put_socket_addr_v4(addr),
-                    SocketAddr::V6(addr) => buf.put_socket_addr_v6(addr),
-                }
-                
-                // 如果是中转，写入代理地址
-                if let Some(agent_addr) = agent {
-                    match agent_addr {
-                        SocketAddr::V4(addr) => buf.put_socket_addr_v4(addr),
-                        SocketAddr::V6(addr) => buf.put_socket_addr_v6(addr),
-                    }
-                }
+        // 写入主地址
+        match self.primary {
+            SocketAddr::V4(addr) => buf.put_socket_addr_v4(&addr),
+            SocketAddr::V6(addr) => buf.put_socket_addr_v6(&addr),
+        }
+        
+        // 如果是中转，写入代理地址
+        if let Some(agent_addr) = &self.agent {
+            match agent_addr {
+                SocketAddr::V4(addr) => buf.put_socket_addr_v4(addr),
+                SocketAddr::V6(addr) => buf.put_socket_addr_v6(addr),
             }
         }
     }
@@ -315,7 +276,7 @@ impl EndpointAddr {
     fn signed_data(&self) -> Vec<u8> {
         let mut unsigned = self.clone();
         unsigned.set_signed(true);
-        *unsigned.signature_mut() = None;
+        unsigned.signature = None;
         let mut buf = bytes::BytesMut::with_capacity(unsigned.encpding_size());
         unsigned.write_base(&mut buf);
         buf.to_vec()
@@ -349,9 +310,10 @@ pub fn be_endpoint_addr(input: &[u8]) -> nom::IResult<&[u8], EndpointAddr> {
     
     // 只有在 SEQUENCED 标志位设置时才解析 sequence
     let (remain, sequence) = if is_sequenced {
-        be_varint(remain)?
+        let (remain, seq) = be_varint(remain)?;
+        (remain, Some(seq))
     } else {
-        (remain, VarInt::from_u32(0))
+        (remain, None)
     };
     
     let (remain, primary) = if is_ipv6 {
@@ -376,9 +338,15 @@ pub fn be_endpoint_addr(input: &[u8]) -> nom::IResult<&[u8], EndpointAddr> {
         (remain, None)
     };
     
-    let (remain, meta) = be_endpoint_meta(remain, flags, sequence)?;
+    let (remain, signature) = be_endpoint_signature(remain, flags)?;
     
-    Ok((remain, EndpointAddr::Endpoint { meta, primary, agent }))
+    Ok((remain, EndpointAddr { 
+        flags, 
+        sequence, 
+        signature,
+        primary, 
+        agent 
+    }))
 }
 
 /// 兼容解析 EndpointAddr：
@@ -419,59 +387,47 @@ fn be_legacy_endpoint_addr_by_length(
         6 => {
             // IPv4 直连
             let (remain, addr) = be_socket_addr_v4(input)?;
-            let meta = EndpointMeta {
+            Ok((remain, EndpointAddr {
                 flags: 0, // IPv4 直连
-                sequence: VarInt::from_u32(0),
+                sequence: None,
                 signature: None,
-            };
-            Ok((remain, EndpointAddr::Endpoint { 
-                meta, 
-                primary: addr.into(), 
-                agent: None 
+                primary: addr.into(),
+                agent: None,
             }))
         }
         12 => {
             // IPv4 中转
             let (remain, primary) = be_socket_addr_v4(input)?;
             let (remain, agent) = be_socket_addr_v4(remain)?;
-            let meta = EndpointMeta {
+            Ok((remain, EndpointAddr {
                 flags: EndpointAddr::FLAG_FORWARD, // IPv4 中转
-                sequence: VarInt::from_u32(0),
+                sequence: None,
                 signature: None,
-            };
-            Ok((remain, EndpointAddr::Endpoint { 
-                meta, 
-                primary: primary.into(), 
-                agent: Some(agent.into()) 
+                primary: primary.into(),
+                agent: Some(agent.into()),
             }))
         }
         18 => {
             // IPv6 直连
             let (remain, addr) = be_socket_addr_v6(input)?;
-            let meta = EndpointMeta {
+            Ok((remain, EndpointAddr {
                 flags: EndpointAddr::FLAG_FAMILY, // IPv6 直连
-                sequence: VarInt::from_u32(0),
+                sequence: None,
                 signature: None,
-            };
-            Ok((remain, EndpointAddr::Endpoint { 
-                meta, 
-                primary: addr.into(), 
-                agent: None 
+                primary: addr.into(),
+                agent: None,
             }))
         }
         36 => {
             // IPv6 中转
             let (remain, primary) = be_socket_addr_v6(input)?;
             let (remain, agent) = be_socket_addr_v6(remain)?;
-            let meta = EndpointMeta {
+            Ok((remain, EndpointAddr {
                 flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_FORWARD, // IPv6 中转
-                sequence: VarInt::from_u32(0),
+                sequence: None,
                 signature: None,
-            };
-            Ok((remain, EndpointAddr::Endpoint { 
-                meta, 
-                primary: primary.into(), 
-                agent: Some(agent.into()) 
+                primary: primary.into(),
+                agent: Some(agent.into()),
             }))
         }
         _ => {
@@ -480,30 +436,16 @@ fn be_legacy_endpoint_addr_by_length(
     }
 }
 
-fn be_endpoint_meta(input: &[u8], flags: u8, sequence: VarInt) -> IResult<&[u8], EndpointMeta> {
+fn be_endpoint_signature(input: &[u8], flags: u8) -> IResult<&[u8], Option<EndpointSignature>> {
     if (flags & EndpointAddr::FLAG_SIGNED) != EndpointAddr::FLAG_SIGNED {
         if !input.is_empty() {
             return Err(nom::Err::Error(make_error(input, ErrorKind::Eof)));
         }
-        return Ok((
-            input,
-            EndpointMeta {
-                flags,
-                sequence,
-                signature: None,
-            },
-        ));
+        return Ok((input, None));
     }
 
     if input.is_empty() {
-        return Ok((
-            input,
-            EndpointMeta {
-                flags,
-                sequence,
-                signature: None,
-            },
-        ));
+        return Ok((input, None));
     }
 
     let (remain, scheme_u16) = be_u16(input)?;
@@ -513,14 +455,10 @@ fn be_endpoint_meta(input: &[u8], flags: u8, sequence: VarInt) -> IResult<&[u8],
     let (remain, sig) = take(sig_len)(remain)?;
     Ok((
         remain,
-        EndpointMeta {
-            flags,
-            sequence,
-            signature: Some(EndpointSignature {
-                scheme: scheme_u16,
-                signature: sig.to_vec(),
-            }),
-        },
+        Some(EndpointSignature {
+            scheme: scheme_u16,
+            signature: sig.to_vec(),
+        }),
     ))
 }
 
@@ -580,14 +518,10 @@ pub fn be_ip_addr(is_v6: bool) -> impl Fn(&[u8]) -> IResult<&[u8], IpAddr> {
 
 impl Display for EndpointAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EndpointAddr::Endpoint { primary, agent, .. } => {
-                if let Some(agent_addr) = agent {
-                    write!(f, "{primary}-{agent_addr}")
-                } else {
-                    write!(f, "{primary}")
-                }
-            }
+        if let Some(agent_addr) = &self.agent {
+            write!(f, "{}-{agent_addr}", self.primary)
+        } else {
+            write!(f, "{}", self.primary)
         }
     }
 }
@@ -637,12 +571,10 @@ mod tests {
     #[test]
     fn flag_bit_ops_work() {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5353);
-        let mut ep = EndpointAddr::Endpoint {
-            meta: EndpointMeta {
-                flags: 0b0011_1111,
-                sequence: VarInt::from_u32(0),
-                signature: None,
-            },
+        let mut ep = EndpointAddr {
+            flags: 0b0011_1111,
+            sequence: None,
+            signature: None,
             primary: addr.into(),
             agent: None,
         };
@@ -652,20 +584,20 @@ mod tests {
 
         ep.set_main(true);
         assert!(ep.is_main());
-        assert_eq!(ep.meta().flags, 0b1011_1111);
+        assert_eq!(ep.flags, 0b1011_1111);
 
         ep.set_signed(true);
         assert!(ep.is_signed());
-        assert_eq!(ep.meta().flags, 0b1111_1111);
+        assert_eq!(ep.flags, 0b1111_1111);
 
         ep.set_main(false);
         assert!(!ep.is_main());
         assert!(ep.is_signed());
-        assert_eq!(ep.meta().flags, 0b0111_1111);
+        assert_eq!(ep.flags, 0b0111_1111);
 
         ep.set_signed(false);
         assert!(!ep.is_signed());
-        assert_eq!(ep.meta().flags, 0b0011_1111);
+        assert_eq!(ep.flags, 0b0011_1111);
     }
 
     #[test]
@@ -715,42 +647,34 @@ mod tests {
 
         let cases = [
             // IPv4 直连，带 MAIN 和 SEQUENCED 标志
-            EndpointAddr::Endpoint {
-                meta: EndpointMeta {
-                    flags: EndpointAddr::FLAG_MAIN | EndpointAddr::FLAG_SEQUENCED,
-                    sequence: VarInt::from_u32(0),
-                    signature: None,
-                },
+            EndpointAddr {
+                flags: EndpointAddr::FLAG_MAIN | EndpointAddr::FLAG_SEQUENCED,
+                sequence: Some(VarInt::from_u32(0)),
+                signature: None,
                 primary: v4_outer.into(),
                 agent: None,
             },
             // IPv4 中转，带 SIGNED 和 SEQUENCED 标志
-            EndpointAddr::Endpoint {
-                meta: EndpointMeta {
-                    flags: EndpointAddr::FLAG_FORWARD | EndpointAddr::FLAG_SIGNED | EndpointAddr::FLAG_SEQUENCED,
-                    sequence: VarInt::from_u32(127),
-                    signature: None,
-                },
+            EndpointAddr {
+                flags: EndpointAddr::FLAG_FORWARD | EndpointAddr::FLAG_SIGNED | EndpointAddr::FLAG_SEQUENCED,
+                sequence: Some(VarInt::from_u32(127)),
+                signature: None,
                 primary: v4_outer.into(),
                 agent: Some(v4_agent.into()),
             },
             // IPv6 直连，带 MAIN 和 SEQUENCED 标志
-            EndpointAddr::Endpoint {
-                meta: EndpointMeta {
-                    flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_MAIN | EndpointAddr::FLAG_SEQUENCED,
-                    sequence: VarInt::from_u32(128),
-                    signature: None,
-                },
+            EndpointAddr {
+                flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_MAIN | EndpointAddr::FLAG_SEQUENCED,
+                sequence: Some(VarInt::from_u32(128)),
+                signature: None,
                 primary: v6_outer.into(),
                 agent: None,
             },
             // IPv6 中转，带 SEQUENCED 标志
-            EndpointAddr::Endpoint {
-                meta: EndpointMeta {
-                    flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_FORWARD | EndpointAddr::FLAG_SEQUENCED,
-                    sequence: VarInt::from_u64((1 << 62) - 1).unwrap(),
-                    signature: None,
-                },
+            EndpointAddr {
+                flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_FORWARD | EndpointAddr::FLAG_SEQUENCED,
+                sequence: Some(VarInt::from_u64((1 << 62) - 1).unwrap()),
+                signature: None,
                 primary: v6_outer.into(),
                 agent: Some(v6_agent.into()),
             },
