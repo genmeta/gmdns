@@ -262,9 +262,6 @@ impl MdnsProtocol {
                     })
                     .filter_map(|answer| match &answer.data {
                         E(e) => Some(e.clone()),
-                        EE(e) => Some(e.clone()),
-                        E6(e) => Some(e.clone()),
-                        EE6(e) => Some(e.clone()),
                         _ => {
                             tracing::debug!(target: "mdns", ?answer, "Ignored record");
                             None
