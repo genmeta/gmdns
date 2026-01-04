@@ -45,9 +45,7 @@ impl Packet {
         packet.header.flags.set_query(true);
         hosts.iter().for_each(|(name, eps)| {
             eps.iter().for_each(|ep| {
-                let (rtype, rdata) = match ep {
-                    EndpointAddr::Endpoint { .. } => (Type::E, RData::E(ep.clone())),
-                };
+                let (rtype, rdata) = (Type::E, RData::E(ep.clone()));
                 packet.add_answer(name, rtype, Class::IN, 300, rdata);
             });
         });
