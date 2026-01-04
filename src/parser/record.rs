@@ -133,15 +133,8 @@ pub enum Type {
     Srv,
     /// 12 a domain name pointer
     Ptr,
-    /// Unassigned 265-32767
-    /// 266 a ipv4 address,
+    /// 266 Unified endpoint address (IPv4/IPv6, direct/relay determined by flags)
     E,
-    /// 267 a ipv6 address,
-    E6,
-    /// 268 a ipv4 relay endpoint,
-    EE,
-    /// 269 a ipv6 relay endpoint,
-    EE6,
 }
 
 impl TryFrom<u16> for Type {
@@ -156,11 +149,9 @@ impl TryFrom<u16> for Type {
             16 => Self::Txt,
             33 => Self::Srv,
             12 => Self::Ptr,
-            265 => Self::E,
             266 => Self::E,
-            267 => Self::E6,
-            268 => Self::EE,
-            269 => Self::EE6,
+            // 保持向后兼容，将旧的类型映射到统一的 E 类型
+            267 | 268 | 269 => Self::E,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -182,10 +173,7 @@ impl From<Type> for u16 {
             Type::Txt => 16,
             Type::Srv => 33,
             Type::Ptr => 12,
-            Type::E => 265,
-            Type::E6 => 267,
-            Type::EE => 268,
-            Type::EE6 => 269,
+            Type::E => 266,
         }
     }
 }
@@ -199,9 +187,6 @@ pub enum RData {
     Srv(Srv),
     Ptr(Ptr),
     E(EndpointAddr),
-    E6(EndpointAddr),
-    EE(EndpointAddr),
-    EE6(EndpointAddr),
 }
 
 impl Display for RData {
@@ -213,7 +198,7 @@ impl Display for RData {
             RData::Txt(txt) => write!(f, "{txt:?})"),
             RData::Srv(srv) => write!(f, "{srv:?}"),
             RData::Ptr(ptr) => write!(f, "{ptr:?}"),
-            RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => write!(f, "{e}"),
+            RData::E(e) => write!(f, "{e}"),
         }
     }
 }
@@ -298,14 +283,8 @@ fn be_rdata<'a>(
         }
         Type::Ptr => be_ptr(input, origin).map(|(remain, ptr)| (remain, RData::Ptr(ptr))),
         Type::Ns => be_name(input, origin).map(|(remain, name)| (remain, RData::CName(name))),
-        Type::E => be_endpoint_addr_compat(input, false, false, rdlen)
+        Type::E => be_endpoint_addr_compat(input, rdlen)
             .map(|(remain, e)| (remain, RData::E(e))),
-        Type::E6 => be_endpoint_addr_compat(input, false, true, rdlen)
-            .map(|(remain, e)| (remain, RData::E6(e))),
-        Type::EE => be_endpoint_addr_compat(input, true, false, rdlen)
-            .map(|(remain, e)| (remain, RData::EE(e))),
-        Type::EE6 => be_endpoint_addr_compat(input, true, true, rdlen)
-            .map(|(remain, e)| (remain, RData::EE6(e))),
     }
 }
 

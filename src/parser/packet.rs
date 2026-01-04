@@ -46,10 +46,7 @@ impl Packet {
         hosts.iter().for_each(|(name, eps)| {
             eps.iter().for_each(|ep| {
                 let (rtype, rdata) = match ep {
-                    EndpointAddr::E { .. } => (Type::E, RData::E(ep.clone())),
-                    EndpointAddr::E6 { .. } => (Type::E6, RData::E6(ep.clone())),
-                    EndpointAddr::EE { .. } => (Type::EE, RData::EE(ep.clone())),
-                    EndpointAddr::EE6 { .. } => (Type::EE6, RData::EE6(ep.clone())),
+                    EndpointAddr::Endpoint { .. } => (Type::E, RData::E(ep.clone())),
                 };
                 packet.add_answer(name, rtype, Class::IN, 300, rdata);
             });
@@ -146,7 +143,7 @@ fn put_record(buf: &mut Vec<u8>, record: &ResourceRecord, ctx: &mut NameCompress
         RData::Ptr(ptr) => {
             let _ = put_name(buf, ptr.name(), ctx);
         }
-        RData::E(e) | RData::E6(e) | RData::EE(e) | RData::EE6(e) => buf.put_endpoint_addr(e),
+        RData::E(e) => buf.put_endpoint_addr(e),
     }
 
     let rdlen = (buf.len() - rdata_start) as u16;
