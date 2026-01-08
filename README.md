@@ -5,7 +5,7 @@ GMDNS 是一个基于 Rust 开发的高性能 mDNS (Multicast DNS) 协议库，�
 ## 🌟 核心特性
 
 - **标准兼容**：支持标准 DNS 报文格式及 mDNS 组播发现。
-- **P2P 增强**：自定义 `E`, `E6`, `EE`, `EE6` 记录，支持 IPv4/IPv6 的直连与中继地址。
+- **P2P 增强**：自定义 `E` 记录，支持 IPv4/IPv6 的直连与中继地址。
 - **安全验证**：内置 Ed25519 等签名方案，确保端点数据的真实性与完整性。
 - **高性能解析**：基于 `nom` 零拷贝解析框架，提供极速的报文处理能力。
 - **异步驱动**：完全适配 `tokio` 异步运行时，适用于高并发网络环境。
@@ -70,23 +70,53 @@ Answer, Nameserver, Additional 部分均使用此格式：
 
 ### 2. 自定义类型定义 (QType)
 
-| 类型     | 数值 | 描述          | RDATA 格式                                      |
-| :------- | :--- | :------------ | :---------------------------------------------- |
-| **A**    | 1    | IPv4 地址     | 4 字节 IP                                       |
-| **AAAA** | 28   | IPv6 地址     | 16 字节 IP                                      |
-| **SRV**  | 33   | 服务定位      | Priority + Weight + Port + Target               |
-| **E**    | 266  | IPv4 直连端点 | Flags + Seq + Port + IPv4 + [Sig]               |
-| **E6**   | 267  | IPv6 直连端点 | Flags + Seq + Port + IPv6 + [Sig]               |
-| **EE**   | 268  | IPv4 中继端点 | Flags + Seq + Outer(Addr) + Agent(Addr) + [Sig] |
-| **EE6**  | 269  | IPv6 中继端点 | Flags + Seq + Outer(Addr) + Agent(Addr) + [Sig] |
+| 类型     | 数值 | 描述      | RDATA 格式                        |
+| :------- | :--- | :-------- | :-------------------------------- |
+| **A**    | 1    | IPv4 地址 | 4 字节 IP                         |
+| **AAAA** | 28   | IPv6 地址 | 16 字节 IP                        |
+| **SRV**  | 33   | 服务定位  | Priority + Weight + Port + Target |
+| **E**    | 266  | 端点地址  | Flags + Seq + Addr(s) + [Sig]     |
 
 ### 3. 端点扩展细节 (Endpoint Extensions)
 
-#### 3.1 标志位掩码 (Flags Mask)
+#### 3.1 RDATA 线协议格式
+
+##### 包格式
+
+```text
++--------+-----------------+--------------------+----------------------------+
+| flags  | sequence(varint)| addr(s)            | signature (optional)       |
++--------+-----------------+--------------------+----------------------------+
+| u8     | QUIC varint     | v4: 2+4 / v6: 2+16 | scheme(u16)+len(varint)+N  |
++--------+-----------------+--------------------+----------------------------+
+```
+
+##### flags (u8) 字段定义:
+- bit 7 (0x80): MAIN - 主地址标志
+- bit 6 (0x40): SIGNED - 是否有签名标志  
+- bit 5 (0x20): SEQUENCED - 是否有序号
+- bit 4 (0x10): FAMILY - 0=IPv4, 1=IPv6
+- bit 3 (0x08): FORWARD - 0=直连, 1=中转
+- bits 2-0: 保留位
+
+##### 地址格式:
+- 直连: `port(u16)` + `IP(u32/u128)`
+- 中转: `outer_port(u16)` + `outer_IP(u32/u128)` + `agent_port(u16)` + `agent_IP(u32/u128)`
+- `sequence`: DNS 记录编号，同一编号的记录视为一个机器，可以使用多路径连接
+- `signature`: 当 `SIGNED` 置位时，允许附加签名字段
+
+#### 3.2 标志位掩码 (Flags Mask)
 - `0b1000_0000`: **MAIN** (主地址标志)
 - `0b0100_0000`: **SIGNED** (包含签名标志)
+- `0b0010_0000`: **SEQUENCED** (包含序号标志)
+- `0b0001_0000`: **FAMILY** (地址族: 0=IPv4, 1=IPv6)
+- `0b0000_1000`: **FORWARD** (连接类型: 0=直连, 1=中继)
 
-#### 3.2 签名格式 (Signature)
+#### 3.3 地址格式 (Address Format)
+- **直连**: `Port(u16)` + `IP(u32/u128)`
+- **中继**: `OuterPort(u16)` + `OuterIP(u32/u128)` + `AgentPort(u16)` + `AgentIP(u32/u128)`
+
+#### 3.4 签名格式 (Signature)
 若包含签名，格式为：`Scheme (u16)` + `Length (VarInt)` + `Data (N bytes)`。
 
 ---
@@ -97,7 +127,3 @@ Answer, Nameserver, Additional 部分均使用此格式：
 - `src/protocol.rs`：UDP 组播与报文路由逻辑。
 - `src/mdns.rs`：高层 mDNS 发现与响应 API。
 - `examples/`：包含查询、发现与广播的示例代码。
-
-## 📄 开源协议
-
-本项目采用 MIT 协议开源。
