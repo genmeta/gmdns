@@ -2,6 +2,7 @@
 name = "gmdns"
 version = "0.1.0"
 edition = "2024"
+autoexamples = false
 
 [dependencies]
 nom = "8"
@@ -31,10 +32,21 @@ reqwest = { version = "0.12", default-features = false, features = [
 url = "2"
 serde = "1"
 
+# Optional HTTP/3 publisher/resolver via h3x
+h3x = { path = "../h3x", default-features = false, features = ["gm-quic"], optional = true }
+gm-quic = { git = "https://github.com/genmeta/gm-quic.git", branch = "main", optional = true }
+http = { version = "1", optional = true }
+
+[features]
+default = []
+h3x-resolver = ["dep:h3x", "dep:gm-quic", "dep:http"]
+
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
 criterion = "0.5"
 tracing-subscriber = "0.3"
+rustls-pemfile = "2"
+idna = "1"
 axum = { version = "0.8", features = ["macros"] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 redis = { version = "0.23", features = ["tokio-comp", "aio"] }
@@ -51,5 +63,6 @@ name = "discover"
 path = "examples/discover.rs"
 
 [[example]]
-name = "server"
-path = "examples/server.rs"
+name = "h3_server"
+path = "examples/h3x_server.rs"
+required-features = ["h3x-resolver"]

@@ -6,9 +6,13 @@ use tokio::io;
 
 use super::Resolve;
 
+#[cfg(feature = "h3x-resolver")]
+mod h3;
 mod http;
 mod mdns;
 
+#[cfg(feature = "h3x-resolver")]
+pub use h3::H3Resolver;
 pub use http::HttpResolver;
 pub use mdns::MdnsResolver;
 

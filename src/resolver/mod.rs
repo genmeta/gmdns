@@ -15,7 +15,7 @@ pub use crate::parser::record::*;
 pub const HTTP_DNS_SERVER: &str = "https://dns.genmeta.net/";
 pub const MDNS_SERVICE: &str = "_genmeta.local";
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 pub trait Resolve: Display + Debug {
     async fn publish(
         &self,

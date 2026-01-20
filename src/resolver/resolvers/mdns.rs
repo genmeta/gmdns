@@ -6,7 +6,7 @@ use rustls::{SignatureScheme, sign::SigningKey};
 use super::Resolve;
 pub use crate::mdns::Mdns as MdnsResolver;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Resolve for MdnsResolver {
     async fn publish(
         &self,
@@ -16,7 +16,7 @@ impl Resolve for MdnsResolver {
         _key: Option<(&dyn SigningKey, SignatureScheme)>,
         addresses: &[std::net::SocketAddr],
     ) -> io::Result<()> {
-        let addresses: Vec<_> = addresses.iter().map(|&addr| addr).collect();
+        let addresses: Vec<_> = addresses.iter().copied().collect();
         self.insert_host(name.to_string(), addresses);
         Ok(())
     }
