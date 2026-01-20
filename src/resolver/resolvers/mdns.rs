@@ -16,7 +16,7 @@ impl Resolve for MdnsResolver {
         _key: Option<(&dyn SigningKey, SignatureScheme)>,
         addresses: &[std::net::SocketAddr],
     ) -> io::Result<()> {
-        let addresses: Vec<_> = addresses.iter().copied().collect();
+        let addresses: Vec<_> = addresses.to_vec();
         self.insert_host(name.to_string(), addresses);
         Ok(())
     }
