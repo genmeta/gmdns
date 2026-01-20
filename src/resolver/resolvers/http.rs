@@ -109,10 +109,10 @@ impl Resolve for HttpResolver {
                     };
                     ep.set_main(is_main);
                     ep.set_sequence(sequence);
-                    if let Some((k, s)) = key {
-                        if let Err(e) = ep.sign_with(k, s) {
-                            return Err(io::Error::other(format!("Sign error: {}", e)));
-                        }
+                    if let Some((k, s)) = key
+                        && let Err(e) = ep.sign_with(k, s)
+                    {
+                        return Err(io::Error::other(format!("Sign error: {}", e)));
                     }
                     Ok(ep)
                 })
