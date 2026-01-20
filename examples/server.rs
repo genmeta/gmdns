@@ -61,18 +61,29 @@ struct AppState {
     ttl_secs: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum AppError {
+    #[error("Missing host parameter")]
     MissingHostParam,
+    #[error("Invalid host")]
     InvalidHost,
+    #[error("Forbidden host")]
     ForbiddenHost,
+    #[error("Host mismatch")]
     HostMismatch,
+    #[error("Missing client certificate")]
     MissingClientCertificate,
+    #[error("Client certificate domain not allowed")]
     ClientCertDomainNotAllowed,
+    #[error("Invalid DNS packet: {0}")]
     InvalidDnsPacket(String),
+    #[error("No answers in packet")]
     NoAnswersInPacket,
+    #[error("Signature required")]
     SignatureRequired,
+    #[error("Invalid signature")]
     InvalidSignature,
+    #[error("Redis error: {0}")]
     Redis(String),
 }
 
@@ -92,19 +103,11 @@ impl AppError {
             AppError::Redis(_) => http::StatusCode::SERVICE_UNAVAILABLE,
         }
     }
-
-    fn message(&self) -> String {
-        match self {
-            AppError::InvalidDnsPacket(s) => format!("Invalid DNS packet: {s}"),
-            AppError::Redis(s) => format!("Redis error: {s}"),
-            _ => format!("{self:?}"),
-        }
-    }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        (self.status(), self.message()).into_response()
+        (self.status(), format!("{}", self)).into_response()
     }
 }
 
@@ -242,7 +245,7 @@ async fn perform_lookup(state: &AppState, host: &str) -> Result<Option<Vec<u8>>,
 
 async fn write_error(resp: &mut Response, err: AppError) {
     resp.set_status(err.status())
-        .set_body(bytes::Bytes::from(err.message()));
+        .set_body(bytes::Bytes::from(format!("{}", err)));
     let _ = resp.flush().await;
 }
 
