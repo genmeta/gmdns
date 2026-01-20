@@ -9,8 +9,9 @@ use axum::{
 };
 use bytes::Bytes;
 use clap::Parser;
-use gmdns::parser::packet::be_packet;
+use gmdns::parser::{packet::be_packet, record::RData};
 use redis::AsyncCommands;
+use rustls::pki_types::SubjectPublicKeyInfoDer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, instrument, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,6 +28,10 @@ pub struct Options {
     pub key: Option<PathBuf>,
     #[clap(long, default_value = "logs/app.log")]
     pub log_dir: PathBuf,
+    #[clap(long)]
+    pub require_signature: bool,
+    #[clap(long)]
+    pub pub_key: Option<PathBuf>,
 }
 
 pub fn init_logging(options: &Options) {
@@ -48,6 +53,8 @@ pub fn init_logging(options: &Options) {
 #[derive(Clone)]
 pub struct AppState {
     pub redis_pool: deadpool_redis::Pool,
+    pub require_signature: bool,
+    pub pub_key: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -58,6 +65,8 @@ pub enum AppError {
     RedisPoolError(String),
     RedisError(String),
     NotFound(String),
+    SignatureRequired,
+    InvalidSignature,
 }
 
 impl std::fmt::Display for AppError {
@@ -69,6 +78,8 @@ impl std::fmt::Display for AppError {
             AppError::RedisPoolError(msg) => write!(f, "Redis pool error: {msg}"),
             AppError::RedisError(msg) => write!(f, "Redis error: {msg}"),
             AppError::NotFound(msg) => write!(f, "{msg}"),
+            AppError::SignatureRequired => write!(f, "Signature required but not provided"),
+            AppError::InvalidSignature => write!(f, "Invalid signature"),
         }
     }
 }
@@ -82,6 +93,8 @@ impl IntoResponse for AppError {
             AppError::RedisPoolError(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::RedisError(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::SignatureRequired => StatusCode::BAD_REQUEST,
+            AppError::InvalidSignature => StatusCode::BAD_REQUEST,
         };
         (status, self.to_string()).into_response()
     }
@@ -110,7 +123,7 @@ pub async fn publish(
         }
     };
 
-    if let Err(e) = validate_dns_packet(body.as_ref()) {
+    if let Err(e) = validate_dns_packet(body.as_ref(), state.require_signature, &state.pub_key) {
         warn!(host = %name, bytes = body.len(), "publish.invalid_dns_packet");
         return Err(e);
     }
@@ -167,10 +180,46 @@ pub async fn lookup(
     }
 }
 
-pub fn validate_dns_packet(packet: &[u8]) -> Result<String, AppError> {
+pub fn validate_dns_packet(
+    packet: &[u8],
+    require_signature: bool,
+    pub_key: &Option<Vec<u8>>,
+) -> Result<String, AppError> {
     let (remaining, dns_packet) = be_packet(packet).map_err(|_| AppError::InvalidDnsPacket)?;
     if !remaining.is_empty() {
         warn!(remain = remaining.len(), "dns.parse.extra_bytes");
+    }
+
+    if require_signature {
+        let has_signature = dns_packet
+            .answers
+            .iter()
+            .any(|record| matches!(record.data(), RData::E(endpoint) if endpoint.is_signed()));
+        if !has_signature {
+            warn!("signature.required.bu_not_provided");
+            return Err(AppError::SignatureRequired);
+        }
+
+        // 验证签名
+        for record in &dns_packet.answers {
+            if let RData::E(endpoint) = &record.data() {
+                if endpoint.is_signed() {
+                    if let Some(pk) = pub_key {
+                        let spki = SubjectPublicKeyInfoDer::try_from(pk.as_slice())
+                            .map_err(|_| AppError::InvalidSignature)?;
+                        if !endpoint
+                            .verify_signature(spki)
+                            .map_err(|_| AppError::InvalidSignature)?
+                        {
+                            return Err(AppError::InvalidSignature);
+                        }
+                    } else {
+                        // 如果需要签名但没有公钥，我们报错
+                        return Err(AppError::SignatureRequired);
+                    }
+                }
+            }
+        }
     }
 
     dns_packet
@@ -197,7 +246,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis_cfg = deadpool_redis::Config::from_url(options.redis.clone());
     let redis_pool = redis_cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
 
-    let state = AppState { redis_pool };
+    let pub_key = if let Some(path) = &options.pub_key {
+        Some(std::fs::read(path)?)
+    } else {
+        None
+    };
+
+    let state = AppState {
+        redis_pool,
+        require_signature: options.require_signature,
+        pub_key,
+    };
     let app = build_router(state);
 
     info!(listen = %options.listen, "server.start");
