@@ -1,0 +1,428 @@
+use std::{collections::HashMap, io, net::SocketAddr, path::PathBuf, sync::Arc};
+
+use clap::Parser;
+use deadpool_redis::Pool;
+use futures::future::BoxFuture;
+use gm_quic::prelude::handy::{ToCertificate, ToPrivateKey};
+use gmdns::parser::{packet::be_packet, record::RData};
+use h3x::{
+    agent::RemoteAgent,
+    server::{Request, Response, Router, Servers, Service},
+};
+use redis::AsyncCommands;
+use rustls::{RootCertStore, server::WebPkiClientVerifier};
+use tracing::{info, warn};
+
+#[derive(Parser, Clone, Debug)]
+#[command(version, about, long_about = None)]
+struct Options {
+    #[arg(long, default_value = "redis://127.0.0.1:6379")]
+    redis: String,
+
+    #[arg(long, default_value = "0.0.0.0:0")]
+    listen: SocketAddr,
+
+    #[arg(long, default_value = "localhost")]
+    server_name: String,
+
+    #[arg(long)]
+    cert: PathBuf,
+
+    #[arg(long)]
+    key: PathBuf,
+
+    #[arg(long)]
+    client_ca: PathBuf,
+
+    #[arg(long, default_value_t = true)]
+    require_signature: bool,
+
+    #[arg(long, default_value_t = 30)]
+    ttl_secs: u64,
+}
+
+#[derive(Clone)]
+struct AppState {
+    redis_pool: Pool,
+    require_signature: bool,
+    ttl_secs: u64,
+}
+
+#[derive(Debug)]
+enum AppError {
+    MissingHostParam,
+    InvalidHost,
+    ForbiddenHost,
+    HostMismatch,
+    MissingClientCertificate,
+    ClientCertDomainNotAllowed,
+    InvalidDnsPacket(String),
+    NoAnswersInPacket,
+    SignatureRequired,
+    InvalidSignature,
+    Redis(String),
+}
+
+impl AppError {
+    fn status(&self) -> http::StatusCode {
+        match self {
+            AppError::MissingHostParam => http::StatusCode::BAD_REQUEST,
+            AppError::InvalidHost => http::StatusCode::BAD_REQUEST,
+            AppError::ForbiddenHost => http::StatusCode::BAD_REQUEST,
+            AppError::HostMismatch => http::StatusCode::BAD_REQUEST,
+            AppError::MissingClientCertificate => http::StatusCode::UNAUTHORIZED,
+            AppError::ClientCertDomainNotAllowed => http::StatusCode::FORBIDDEN,
+            AppError::InvalidDnsPacket(_) => http::StatusCode::BAD_REQUEST,
+            AppError::NoAnswersInPacket => http::StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::SignatureRequired => http::StatusCode::BAD_REQUEST,
+            AppError::InvalidSignature => http::StatusCode::BAD_REQUEST,
+            AppError::Redis(_) => http::StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            AppError::InvalidDnsPacket(s) => format!("Invalid DNS packet: {s}"),
+            AppError::Redis(s) => format!("Redis error: {s}"),
+            _ => format!("{self:?}"),
+        }
+    }
+}
+
+fn normalize_host(host: &str) -> Result<String, AppError> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(AppError::InvalidHost);
+    }
+    if host.contains('*') {
+        return Err(AppError::ForbiddenHost);
+    }
+
+    // 允许末尾 '.'（FQDN 写法）
+    let host = host.strip_suffix('.').unwrap_or(host);
+
+    let host = idna::domain_to_ascii(host).map_err(|_| AppError::InvalidHost)?;
+    Ok(host.to_ascii_lowercase())
+}
+
+fn parse_query_params(uri: &http::Uri) -> HashMap<String, String> {
+    let query = uri.query().unwrap_or("");
+    url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect()
+}
+
+fn extract_client_dns_sans(agent: &RemoteAgent) -> Vec<String> {
+    use x509_parser::prelude::*;
+
+    let Some(leaf) = agent.cert_chain().first() else {
+        return vec![];
+    };
+
+    let Ok((_remain, cert)) = X509Certificate::from_der(leaf.as_ref()) else {
+        return vec![];
+    };
+
+    let mut out = vec![];
+    if let Ok(Some(san)) = cert.subject_alternative_name() {
+        for name in san.value.general_names.iter() {
+            if let GeneralName::DNSName(dns) = name {
+                out.push(dns.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn client_allowed_host(agent: &RemoteAgent) -> Result<String, AppError> {
+    let mut sans = extract_client_dns_sans(agent)
+        .into_iter()
+        .filter_map(|h| normalize_host(&h).ok())
+        .collect::<Vec<_>>();
+
+    sans.sort();
+    sans.dedup();
+
+    match sans.len() {
+        1 => Ok(sans.remove(0)),
+        _ => Err(AppError::ClientCertDomainNotAllowed),
+    }
+}
+
+fn validate_dns_packet(
+    packet: &[u8],
+    require_signature: bool,
+    agent: &RemoteAgent,
+) -> Result<String, AppError> {
+    let (remaining, dns_packet) =
+        be_packet(packet).map_err(|e| AppError::InvalidDnsPacket(e.to_string()))?;
+    if !remaining.is_empty() {
+        warn!(remain = remaining.len(), "dns.parse.extra_bytes");
+    }
+
+    if require_signature {
+        let has_signature = dns_packet
+            .answers
+            .iter()
+            .any(|record| matches!(record.data(), RData::E(endpoint) if endpoint.is_signed()));
+
+        if !has_signature {
+            return Err(AppError::SignatureRequired);
+        }
+
+        for record in &dns_packet.answers {
+            if let RData::E(endpoint) = record.data() {
+                if endpoint.is_signed() {
+                    let ok = endpoint
+                        .verify_signature(agent.public_key())
+                        .map_err(|_| AppError::InvalidSignature)?;
+                    if !ok {
+                        return Err(AppError::InvalidSignature);
+                    }
+                }
+            }
+        }
+    }
+
+    dns_packet
+        .answers
+        .first()
+        .map(|record| record.name().to_string())
+        .ok_or(AppError::NoAnswersInPacket)
+}
+
+async fn write_error(resp: &mut Response, err: AppError) {
+    resp.set_status(err.status())
+        .set_body(bytes::Bytes::from(err.message()));
+    let _ = resp.flush().await;
+}
+
+async fn publish(state: AppState, mut req: Request, resp: &mut Response) {
+    let params = parse_query_params(&req.uri());
+    let Some(host) = params.get("host") else {
+        write_error(resp, AppError::MissingHostParam).await;
+        return;
+    };
+
+    let host = match normalize_host(host) {
+        Ok(h) => h,
+        Err(e) => {
+            write_error(resp, e).await;
+            return;
+        }
+    };
+
+    let Some(agent) = req.agent().cloned() else {
+        write_error(resp, AppError::MissingClientCertificate).await;
+        return;
+    };
+
+    let allowed = match client_allowed_host(&agent) {
+        Ok(h) => h,
+        Err(e) => {
+            write_error(resp, e).await;
+            return;
+        }
+    };
+
+    if allowed != host {
+        write_error(resp, AppError::HostMismatch).await;
+        return;
+    }
+
+    let body = match req.read_to_bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            write_error(resp, AppError::InvalidDnsPacket(e.to_string())).await;
+            return;
+        }
+    };
+
+    let packet_name = match validate_dns_packet(body.as_ref(), state.require_signature, &agent) {
+        Ok(n) => n,
+        Err(e) => {
+            write_error(resp, e).await;
+            return;
+        }
+    };
+
+    let packet_host = match normalize_host(&packet_name) {
+        Ok(h) => h,
+        Err(e) => {
+            write_error(resp, e).await;
+            return;
+        }
+    };
+
+    if packet_host != host {
+        write_error(resp, AppError::HostMismatch).await;
+        return;
+    }
+
+    let mut conn = match state.redis_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            write_error(resp, AppError::Redis(e.to_string())).await;
+            return;
+        }
+    };
+
+    let ttl_secs: usize = state.ttl_secs.try_into().unwrap_or(usize::MAX);
+    if let Err(e) = conn
+        .set_ex::<_, _, ()>(&host, body.as_ref(), ttl_secs)
+        .await
+    {
+        write_error(resp, AppError::Redis(e.to_string())).await;
+        return;
+    }
+
+    info!(host = %host, ttl = state.ttl_secs, bytes = body.len(), "publish.ok");
+    resp.set_status(http::StatusCode::OK)
+        .set_body(bytes::Bytes::from_static(b"OK"));
+    let _ = resp.flush().await;
+}
+
+async fn lookup(state: AppState, req: Request, resp: &mut Response) {
+    let params = parse_query_params(&req.uri());
+    let Some(host) = params.get("host") else {
+        write_error(resp, AppError::MissingHostParam).await;
+        return;
+    };
+
+    let host = match normalize_host(host) {
+        Ok(h) => h,
+        Err(e) => {
+            write_error(resp, e).await;
+            return;
+        }
+    };
+
+    let mut conn = match state.redis_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            write_error(resp, AppError::Redis(e.to_string())).await;
+            return;
+        }
+    };
+
+    match conn.get::<_, Option<Vec<u8>>>(&host).await {
+        Ok(Some(bytes)) => {
+            resp.set_status(http::StatusCode::OK)
+                .set_body(bytes::Bytes::from(bytes));
+            let _ = resp.flush().await;
+        }
+        Ok(None) => {
+            resp.set_status(http::StatusCode::NOT_FOUND)
+                .set_body(bytes::Bytes::from_static(b"Not Found"));
+            let _ = resp.flush().await;
+        }
+        Err(e) => {
+            write_error(resp, AppError::Redis(e.to_string())).await;
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PublishSvc {
+    state: AppState,
+}
+
+impl Service for PublishSvc {
+    type Future<'s> = BoxFuture<'s, ()>;
+
+    fn serve<'s>(&'s mut self, req: Request, resp: &'s mut Response) -> Self::Future<'s> {
+        let state = self.state.clone();
+        Box::pin(async move { publish(state, req, resp).await })
+    }
+}
+
+#[derive(Clone)]
+struct LookupSvc {
+    state: AppState,
+}
+
+impl Service for LookupSvc {
+    type Future<'s> = BoxFuture<'s, ()>;
+
+    fn serve<'s>(&'s mut self, req: Request, resp: &'s mut Response) -> Self::Future<'s> {
+        let state = self.state.clone();
+        Box::pin(async move { lookup(state, req, resp).await })
+    }
+}
+
+fn load_root_store_from_pem(pem: &[u8]) -> io::Result<RootCertStore> {
+    let mut reader = std::io::Cursor::new(pem);
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let mut store = RootCertStore::empty();
+    store.add_parsable_certificates(certs);
+    Ok(store)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let options = Options::parse();
+
+    let redis_cfg = deadpool_redis::Config::from_url(options.redis.clone());
+    let redis_pool = redis_cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+
+    let client_ca_pem = std::fs::read(&options.client_ca)?;
+    let roots = load_root_store_from_pem(&client_ca_pem)?;
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).build()?;
+
+    let state = AppState {
+        redis_pool,
+        require_signature: options.require_signature,
+        ttl_secs: options.ttl_secs,
+    };
+
+    let router = Router::new()
+        .post(
+            "/publish",
+            PublishSvc {
+                state: state.clone(),
+            },
+        )
+        .get(
+            "/lookup",
+            LookupSvc {
+                state: state.clone(),
+            },
+        );
+
+    let cert_pem = std::fs::read(&options.cert)?;
+    let key_pem = std::fs::read(&options.key)?;
+
+    let bind = {
+        let base = gm_quic::prelude::BindUri::from(format!("inet://{}", options.listen));
+        if options.listen.port() == 0 {
+            base.alloc_port()
+        } else {
+            base
+        }
+    };
+
+    let mut servers = Servers::builder()
+        .with_client_cert_verifier(verifier)?
+        .build();
+
+    servers
+        .add_server(
+            options.server_name.clone(),
+            cert_pem.to_certificate(),
+            key_pem.to_private_key(),
+            None,
+            [bind],
+            router,
+        )
+        .await?;
+
+    info!(listen = %options.listen, server_name = %options.server_name, "h3_server.start");
+    _ = servers.run().await;
+
+    Ok(())
+}

@@ -88,7 +88,7 @@ impl From<io::Error> for Error {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl Resolve for HttpResolver {
     async fn publish(
         &self,
