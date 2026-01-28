@@ -5,7 +5,7 @@ use std::{
     io::{self},
     net::{Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
-    task::{Context, Poll, ready},
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -14,25 +14,26 @@ use futures::{Stream, stream};
 use gm_quic::qinterface::io::IO;
 #[cfg(feature = "h3x-resolver")]
 use gm_quic::qinterface::{Interface, component::Component};
-use tokio::{sync::watch, task::JoinSet, time};
+use tokio::{task::JoinSet, time};
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     parser::{packet::Packet, record::endpoint::EndpointAddr},
     protocol::MdnsProtocol,
 };
 
+#[derive(Clone)]
 pub struct Mdns {
     service_name: String,
     hosts: Arc<Mutex<HashMap<String, Vec<EndpointAddr>>>>,
-    inner: Mutex<MdnsInner>,
+    inner: Arc<Mutex<MdnsInner>>,
 }
 
 struct MdnsInner {
     local_device: String,
     ip: Ipv4Addr,
     proto: Option<Arc<MdnsProtocol>>,
-    shutdown_tx: watch::Sender<bool>,
-    tasks: JoinSet<()>,
+    tasks: Option<AbortOnDropHandle<()>>,
     closing: bool,
 }
 
@@ -69,25 +70,22 @@ impl Mdns {
         let hosts = Arc::new(Mutex::new(HashMap::<String, Vec<EndpointAddr>>::new()));
 
         let proto = MdnsProtocol::new(device, ip)?;
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let tasks = Self::spawn_tasks(
             proto.clone(),
             hosts.clone(),
             service_name.clone(),
-            shutdown_rx,
         );
 
         Ok(Self {
             service_name,
             hosts,
-            inner: Mutex::new(MdnsInner {
+            inner: Arc::new(Mutex::new(MdnsInner {
                 local_device: device.to_string(),
                 ip,
                 proto: Some(proto),
-                shutdown_tx,
-                tasks,
+                tasks: Some(tasks),
                 closing: false,
-            }),
+            })),
         })
     }
 
@@ -95,95 +93,78 @@ impl Mdns {
         proto: Arc<MdnsProtocol>,
         hosts: Arc<Mutex<HashMap<String, Vec<EndpointAddr>>>>,
         service_name: String,
-        shutdown_rx: watch::Receiver<bool>,
-    ) -> JoinSet<()> {
-        let mut tasks = JoinSet::new();
+    ) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut tasks = JoinSet::new();
 
-        // (1) periodic broadcaster
-        tasks.spawn({
-            let proto = proto.clone();
-            let service_name = service_name.clone();
-            let mut shutdown_rx = shutdown_rx.clone();
-            async move {
-                let mut interval = time::interval(Duration::from_secs(10));
-                interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-                loop {
-                    tokio::select! {
-                        _ = interval.tick() => {
-                            let packet = Packet::query(service_name.clone());
-                            if let Err(e) = proto.broadcast_packet(packet).await {
-                                tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
-                            }
-                        }
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                break;
-                            }
+            // (1) periodic broadcaster
+            tasks.spawn({
+                let proto = proto.clone();
+                let service_name = service_name.clone();
+                async move {
+                    let mut interval = time::interval(Duration::from_secs(10));
+                    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+                    loop {
+                        interval.tick().await;
+                        let packet = Packet::query(service_name.clone());
+                        if let Err(e) = proto.broadcast_packet(packet).await {
+                            tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
                         }
                     }
                 }
-            }
-        });
+            });
 
-        // (2) responder
-        tasks.spawn({
-            let proto = proto.clone();
-            let hosts = hosts.clone();
-            let service_name = service_name.clone();
-            let mut shutdown_rx = shutdown_rx.clone();
-            async move {
-                loop {
-                    tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                break;
-                            }
-                        }
-                        res = proto.receive_query() => {
-                            let Ok((_src, query)) = res else {
-                                break;
-                            };
+            // (2) responder
+            tasks.spawn({
+                let proto = proto.clone();
+                let hosts = hosts.clone();
+                let service_name = service_name.clone();
+                async move {
+                    loop {
+                        let res = proto.receive_query().await;
+                        let Ok((_src, query)) = res else {
+                            break;
+                        };
 
-                            let packet = {
-                                let guard = hosts.lock().unwrap();
-                                let host_name = guard
-                                    .keys()
-                                    .cloned()
-                                    .map(|h| Self::local_name(service_name.clone(), h))
-                                    .collect::<HashSet<_>>();
+                        let packet = {
+                            let guard = hosts.lock().unwrap();
+                            let host_name = guard
+                                .keys()
+                                .cloned()
+                                .map(|h| Self::local_name(service_name.clone(), h))
+                                .collect::<HashSet<_>>();
 
-                                query
-                                    .questions
-                                    .iter()
-                                    .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
-                                    .then(|| Packet::answer(query.header.id, &guard))
-                            };
+                            query
+                                .questions
+                                .iter()
+                                .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
+                                .then(|| Packet::answer(query.header.id, &guard))
+                        };
 
-                            if let Some(packet) = packet
-                                && let Err(e) = proto.broadcast_packet(packet).await
-                            {
-                                tracing::debug!(target: "mdns", "Send response error: {}", e);
-                            }
+                        if let Some(packet) = packet
+                            && let Err(e) = proto.broadcast_packet(packet).await
+                        {
+                            tracing::debug!(target: "mdns", "Send response error: {}", e);
                         }
                     }
                 }
-            }
-        });
+            });
 
-        tasks
+            // Wait for all tasks to complete (they run indefinitely until cancelled)
+            while tasks.join_next().await.is_some() {}
+        }))
     }
 
-    fn poll_close(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_close(&self, _cx: &mut Context<'_>) -> Poll<()> {
         let mut inner = self.inner.lock().expect("Mdns inner lock poisoned");
 
         if !inner.closing {
             inner.closing = true;
-            let _ = inner.shutdown_tx.send(true);
+            // Take the task handle to trigger shutdown
+            inner.tasks.take();
         }
 
-        while ready!(inner.tasks.poll_join_next(cx)).is_some() {}
         inner.proto.take();
-
         Poll::Ready(())
     }
 
@@ -202,21 +183,14 @@ impl Mdns {
     }
 
     #[inline]
-    pub fn insert_host(&self, host_name: String, host_addr: Vec<SocketAddr>) {
+    pub fn insert_host(&self, host_name: String, eps: Vec<EndpointAddr>) {
         let local_name = Self::local_name(self.service_name.clone(), host_name.clone());
         let mut guard = self.hosts.lock().unwrap();
         tracing::debug!(
             target: "mdns",
-            %local_name, ?host_addr,
+            %local_name, ?eps,
             "Adding host with addresses",
         );
-        let eps = host_addr
-            .into_iter()
-            .map(|addr| match addr {
-                SocketAddr::V4(addr) => EndpointAddr::direct_v4(addr),
-                SocketAddr::V6(addr) => EndpointAddr::direct_v6(addr),
-            })
-            .collect::<Vec<_>>();
         guard.insert(local_name, eps);
     }
 
@@ -270,53 +244,34 @@ impl Component for Mdns {
     }
 
     fn reinit(&self, _iface: &Interface) {
-        // Try to re-bind mdns socket/tasks to the new interface.
-        let bind_uri = _iface.bind_uri();
-        let Some((_family, device, _port)) = bind_uri.as_iface_bind_uri() else {
-            return;
-        };
-
-        let Ok(real_addr) = _iface.real_addr() else {
-            return;
-        };
-
-        let Ok(sock_addr) = real_addr.to_string().parse::<SocketAddr>() else {
-            return;
-        };
-
-        let SocketAddr::V4(v4) = sock_addr else {
-            // current mDNS impl is IPv4-only
-            return;
-        };
+        // Extract interface info and validate IPv4
+        let binding = _iface.bind_uri();
+        let Some((_family, device, _port)) = binding.as_iface_bind_uri() else { return };
+        let Ok(real_addr) = _iface.real_addr() else { return };
+        let Ok(SocketAddr::V4(v4)) = real_addr.to_string().parse::<SocketAddr>() else { return };
         let ip = *v4.ip();
 
         let mut inner = self.inner.lock().expect("Mdns inner lock poisoned");
 
+        // Skip if already using same device/IP with active protocol
         if inner.local_device == device && inner.ip == ip && inner.proto.is_some() {
             return;
         }
 
-        // signal old tasks to stop; remaining tasks will be aborted when JoinSet is dropped.
-        let _ = inner.shutdown_tx.send(true);
-
+        // Clean up existing tasks and create new protocol
+        inner.tasks.take();
+        
         let Ok(proto) = MdnsProtocol::new(device, ip) else {
             tracing::debug!(target: "mdns", device, %ip, "Failed to reinit mdns protocol");
             return;
         };
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let tasks = Self::spawn_tasks(
-            proto.clone(),
-            self.hosts.clone(),
-            self.service_name.clone(),
-            shutdown_rx,
-        );
-
+        // Update state with new protocol and tasks
+        let tasks = Self::spawn_tasks(proto.clone(), self.hosts.clone(), self.service_name.clone());
         inner.local_device = device.to_string();
         inner.ip = ip;
         inner.proto = Some(proto);
-        inner.shutdown_tx = shutdown_tx;
-        inner.tasks = tasks;
+        inner.tasks = Some(tasks);
         inner.closing = false;
     }
 }
