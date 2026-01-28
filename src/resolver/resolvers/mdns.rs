@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, net::SocketAddr};
 
 use super::{Publisher, Resolver};
 pub use crate::mdns::Mdns as MdnsResolver;
@@ -6,8 +6,8 @@ use crate::parser::record::endpoint::EndpointAddr;
 
 #[async_trait::async_trait]
 impl Publisher for MdnsResolver {
-    async fn publish(&self, name: &str, endpoint: EndpointAddr) -> io::Result<()> {
-        self.insert_host(name.to_string(), vec![endpoint.primary]);
+    async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> io::Result<()> {
+        self.insert_host(name.to_string(), endpoints.to_vec());
         Ok(())
     }
 }

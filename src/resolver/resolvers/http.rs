@@ -92,9 +92,9 @@ impl From<io::Error> for Error {
 
 #[async_trait::async_trait]
 impl Publisher for HttpResolver {
-    async fn publish(&self, name: &str, endpoint: EndpointAddr) -> io::Result<()> {
+    async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> io::Result<()> {
         let mut hosts = HashMap::new();
-        hosts.insert(name.to_string(), vec![endpoint]);
+        hosts.insert(name.to_string(), endpoints.to_vec());
         let answer = MdnsPacket::answer(0, &hosts);
         let bytes = answer.to_bytes();
 

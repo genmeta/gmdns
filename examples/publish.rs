@@ -160,7 +160,7 @@ async fn main() -> io::Result<()> {
         if let Some((key, scheme)) = signer.as_deref().zip(signer_scheme) {
             endpoint.sign_with(key, scheme).map_err(io::Error::other)?;
         }
-        resolver.publish(&opt.host, endpoint).await?;
+        resolver.publish(&opt.host, &[endpoint]).await?;
     }
     info!("publish.ok");
 

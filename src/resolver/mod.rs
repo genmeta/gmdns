@@ -16,7 +16,7 @@ pub const MDNS_SERVICE: &str = "_genmeta.local";
 
 #[async_trait::async_trait]
 pub trait Publisher: Display + Debug {
-    async fn publish(&self, name: &str, endpoint: EndpointAddr) -> io::Result<()>;
+    async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> io::Result<()>;
 }
 
 #[async_trait::async_trait]

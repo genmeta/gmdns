@@ -50,7 +50,7 @@ async fn main() -> Result<(), std::io::Error> {
 ### HTTP/3 DNS Publishing Example
 
 ```rust
-use gmdns::resolver::h3_resolver::H3Resolver;
+use gmdns::{resolver::h3_resolver::H3Resolver, parser::record::endpoint::EndpointAddr};
 use std::path::Path;
 
 #[tokio::main]
@@ -64,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Publish a DNS record
-    resolver.publish("client.genmeta.net", "127.0.0.1:5555").await?;
+    let endpoint = EndpointAddr::direct_v4("127.0.0.1:5555".parse()?);
+    resolver.publish("client.genmeta.net", &[endpoint]).await?;
     Ok(())
 }
 ```
