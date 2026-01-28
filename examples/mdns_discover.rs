@@ -19,22 +19,22 @@ async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let mdns = gmdns::mdns::Mdns::new(SERVICE_NAME, args.ip, &args.device)?;
-    mdns.insert_host(
-        "test.genmeta.net".to_string(),
-        vec![
-            "192.168.1.7:7000".parse().unwrap(),
-            "192.168.1.13:7000".parse().unwrap(),
-        ],
-    );
+    // mdns.insert_host(
+    //     "test.genmeta.net".to_string(),
+    //     vec![
+    //         "192.168.1.7:7000".parse().unwrap(),
+    //         "192.168.1.13:7000".parse().unwrap(),
+    //     ],
+    // );
 
-    mdns.insert_host(
-        "mdns.test.genmeta.net".to_string(),
-        vec![
-            "192.168.1.7:7001".parse().unwrap(),
-            "192.168.1.7:7001".parse().unwrap(),
-            "192.168.1.7:7001".parse().unwrap(),
-        ],
-    );
+    // mdns.insert_host(
+    //     "mdns.test.genmeta.net".to_string(),
+    //     vec![
+    //         "192.168.1.7:7001".parse().unwrap(),
+    //         "192.168.1.7:7001".parse().unwrap(),
+    //         "192.168.1.7:7001".parse().unwrap(),
+    //     ],
+    // );
 
     let mut stream = mdns.discover();
     while let Some((addr, packet)) = stream.next().await {

@@ -571,6 +571,24 @@ impl TryFrom<SocketEndpointAddr> for EndpointAddr {
     }
 }
 
+#[cfg(feature = "h3x-resolver")]
+pub fn sign_endponit_address(
+    server_id: u8,
+    key: Option<(&(impl SigningKey + ?Sized), SignatureScheme)>,
+    endpoint: SocketEndpointAddr,
+) -> Option<EndpointAddr> {
+    let mut ep: EndpointAddr = endpoint.try_into().ok()?;
+
+    ep.set_main(server_id == 0);
+    ep.set_sequence(server_id as u64);
+
+    if let Some((key, scheme)) = key {
+        let _ = ep.sign_with(key, scheme);
+    }
+
+    Some(ep)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

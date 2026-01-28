@@ -31,7 +31,7 @@ type LookupResult = io::Result<Vec<(Option<String>, EndpointAddr)>>;
 enum Command {
     Publish {
         name: String,
-        endpoint: EndpointAddr,
+        endpoints: Vec<EndpointAddr>,
         reply: oneshot::Sender<io::Result<()>>,
     },
     Lookup {
@@ -48,10 +48,10 @@ struct H3ResolverInner {
 }
 
 impl H3ResolverInner {
-    async fn publish(&self, name: &str, endpoint: EndpointAddr) -> io::Result<()> {
+    async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> io::Result<()> {
         let bytes = {
             let mut hosts = std::collections::HashMap::new();
-            hosts.insert(name.to_string(), vec![endpoint]);
+            hosts.insert(name.to_string(), endpoints.to_vec());
             let answer = MdnsPacket::answer(0, &hosts);
             answer.to_bytes()
         };
@@ -163,10 +163,10 @@ impl H3ResolverInner {
             match cmd {
                 Command::Publish {
                     name,
-                    endpoint,
+                    endpoints,
                     reply,
                 } => {
-                    let result = self.publish(&name, endpoint).await;
+                    let result = self.publish(&name, &endpoints).await;
                     let _ = reply.send(result);
                 }
                 Command::Lookup { name, reply } => {
@@ -281,12 +281,12 @@ use crate::resolver::{Publisher, Resolver};
 
 #[async_trait::async_trait]
 impl Publisher for H3Resolver {
-    async fn publish(&self, name: &str, endpoint: EndpointAddr) -> io::Result<()> {
+    async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> io::Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::Publish {
                 name: name.to_string(),
-                endpoint,
+                endpoints: endpoints.to_vec(),
                 reply: reply_tx,
             })
             .await
