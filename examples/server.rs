@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use dashmap::DashMap;
@@ -24,18 +24,18 @@ struct Options {
     #[arg(long, default_value = "0.0.0.0:4433")]
     listen: SocketAddr,
 
-    #[arg(long, default_value = "xforward.cloudns.ph")]
+    #[arg(long, default_value = "localhost")]
     server_name: String,
 
     #[arg(
         long,
-        default_value = "examples/keychain/xforward.cloudns.ph/xforward.cloudns.ph-ECC.crt"
+        default_value = "examples/keychain/localhost/localhost-ECC.crt"
     )]
     cert: PathBuf,
 
     #[arg(
         long,
-        default_value = "examples/keychain/xforward.cloudns.ph/xforward.cloudns.ph-ECC.key"
+        default_value = "examples/keychain/localhost/localhost-ECC.key"
     )]
     key: PathBuf,
 
@@ -282,12 +282,18 @@ impl Service for PublishSvc {
     fn serve<'s>(&self, request: &'s mut Request, response: &'s mut Response) -> Self::Future<'s> {
         let state = self.state.clone();
         Box::pin(async move {
+            info!("Received publish request");
+            
             // 由于request现在是&mut，我们需要重新构造publish逻辑
             let params = parse_query_params(&request.uri());
+            info!("Query params: {:?}", params);
+            
             let Some(host) = params.get("host") else {
+                warn!("Missing host parameter");
                 write_error(response, AppError::MissingHostParam).await;
                 return;
             };
+            info!("Publishing for host: {}", host);
 
             let host = match normalize_host(host) {
                 Ok(h) => h,
@@ -298,26 +304,38 @@ impl Service for PublishSvc {
             };
 
             let Some(agent) = request.agent().cloned() else {
+                warn!("Missing client certificate");
                 write_error(response, AppError::MissingClientCertificate).await;
                 return;
             };
+            info!("Client certificate present, checking allowed host");
 
             let allowed = match client_allowed_host(&agent) {
-                Ok(h) => h,
+                Ok(h) => {
+                    info!("Client allowed host: {}", h);
+                    h
+                }
                 Err(e) => {
+                    warn!("Client certificate domain not allowed: {:?}", e);
                     write_error(response, e).await;
                     return;
                 }
             };
 
             if allowed != host {
+                warn!("Host mismatch: allowed={}, requested={}", allowed, host);
                 write_error(response, AppError::HostMismatch).await;
                 return;
             }
+            info!("Host validation passed");
 
             let body = match request.read_to_bytes().await {
-                Ok(b) => b,
+                Ok(b) => {
+                    info!("Read request body: {} bytes", b.len());
+                    b
+                }
                 Err(e) => {
+                    warn!("Failed to read request body: {:?}", e);
                     write_error(response, AppError::InvalidDnsPacket(e.to_string())).await;
                     return;
                 }
@@ -471,10 +489,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("Failed to install ring crypto provider");
 
-    let file = File::create("error.log").expect("Failed to create error.log");
     tracing_subscriber::fmt()
-        .with_writer(file)
-        .with_max_level(Level::ERROR)
+        .with_max_level(Level::INFO) // 显示INFO级别的日志
         .init();
 
     let options = Options::parse();
