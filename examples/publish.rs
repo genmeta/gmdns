@@ -11,8 +11,8 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Options {
-    /// Base URL of the H3 DNS server, e.g. https://xforward.cloudns.ph:4433/
-    #[arg(long, default_value = "https://xforward.cloudns.ph:4433/")]
+    /// Base URL of the H3 DNS server, e.g. https://localhost:4433/
+    #[arg(long, default_value = "https://localhost:4433/")]
     base_url: String,
 
     /// PEM file containing CA certificates that can verify the server certificate.
@@ -124,6 +124,14 @@ async fn main() -> io::Result<()> {
     let cert_chain_pem = std::fs::read(&opt.client_cert)?;
     let private_key_pem = std::fs::read(&opt.client_key)?;
 
+    // 显示将要使用的证书信息
+    let mut cert_reader = std::io::Cursor::new(&cert_chain_pem);
+    if let Ok(certs) = rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>() {
+        if let Some(first_cert) = certs.first() {
+            info!(cert_len = first_cert.len(), "Client certificate loaded, will be sent to server for storage");
+        }
+    }
+
     let signer = opt
         .sign
         .then(|| build_signing_key_from_pem(&private_key_pem))
@@ -141,9 +149,9 @@ async fn main() -> io::Result<()> {
         .build();
 
     // Uses H3Resolver which uses gm-quic internally aka HTTP/3
-    let resolver = H3Resolver::new(opt.base_url, client)?;
+    let resolver = H3Resolver::new(opt.base_url.clone(), client)?;
 
-    info!(host = %opt.host, addrs = ?opt.addr, "publish.start");
+    info!(host = %opt.host, addrs = ?opt.addr, base_url = %opt.base_url, "publish.start");
     if let Some(scheme) = signer_scheme {
         info!(?scheme, "publish.endpoint_signing.enabled");
     } else {
@@ -151,6 +159,7 @@ async fn main() -> io::Result<()> {
     }
 
     for &addr in &opt.addr {
+        info!("Creating endpoint for address: {}", addr);
         let mut endpoint = match addr {
             SocketAddr::V4(v4) => EndpointAddr::direct_v4(v4),
             SocketAddr::V6(v6) => EndpointAddr::direct_v6(v6),
@@ -158,9 +167,12 @@ async fn main() -> io::Result<()> {
         endpoint.set_main(opt.is_main);
         endpoint.set_sequence(opt.sequence);
         if let Some((key, scheme)) = signer.as_deref().zip(signer_scheme) {
+            info!("Signing endpoint with scheme: {:?}", scheme);
             endpoint.sign_with(key, scheme).map_err(io::Error::other)?;
         }
+        info!("Publishing endpoint: {:?}", endpoint);
         resolver.publish(&opt.host, &[endpoint]).await?;
+        info!("Successfully published endpoint for {}", addr);
     }
     info!("publish.ok");
 
