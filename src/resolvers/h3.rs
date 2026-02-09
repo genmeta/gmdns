@@ -88,6 +88,7 @@ impl H3Resolver {
         })
     }
 
+    #[tracing::instrument(level = "debug", skip(self), err)]
     pub async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> Result<(), Error> {
         debug!("h3x Publishing {} with {} endpoints", name, endpoints.len());
         let bytes = {
@@ -131,6 +132,7 @@ impl H3Resolver {
         "download.genmeta.net",
     ];
 
+    #[tracing::instrument(level = "debug", skip(self), err)]
     pub async fn lookup<'n>(&self, name: &str) -> Result<RecordStream<'n>, Error> {
         use crate::parser::record;
         let now = Instant::now();
@@ -160,6 +162,7 @@ impl H3Resolver {
         url.set_query(Some(&format!("host={}", name)));
         let uri: http::Uri = url.as_str().parse().expect("URL should be valid URI");
 
+        tracing::debug!("Cache miss, sending lookup request to {}", self.base_url);
         let (_req, mut resp) = self
             .client
             .new_request()
@@ -167,6 +170,7 @@ impl H3Resolver {
             .await
             .map_err(|source| Error::H3Request { source })?;
 
+        tracing::debug!("Received response with status {}", resp.status());
         match resp.status() {
             http::StatusCode::OK => {}
             http::StatusCode::NOT_FOUND => return Err(Error::NoRecordFound {}),
