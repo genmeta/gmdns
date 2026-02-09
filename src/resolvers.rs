@@ -98,16 +98,17 @@ impl Resolvers {
         self
     }
 
-    pub async fn lookup<'n>(
+    pub async fn lookup(
         &self,
-        name: &'n str,
-    ) -> Result<impl Stream<Item = (Source, EndpointAddr)> + use<'n>, DnsErrors> {
+        name: &str,
+    ) -> Result<impl Stream<Item = (Source, EndpointAddr)> + use<>, DnsErrors> {
         let mut errors = vec![];
 
         let mut lookups = stream::FuturesUnordered::from_iter(
             (self.resolvers.clone().into_iter()).map(|resolver| {
                 let resolver = resolver.clone();
-                async move { (resolver.lookup(name).await, resolver.clone()) }
+                let name = name.to_string();
+                async move { (resolver.lookup(&name).await, resolver.clone()) }
             }),
         );
 
@@ -124,7 +125,7 @@ impl Resolvers {
 }
 
 impl Resolve for Resolvers {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         self.lookup(name)
             .map_ok(StreamExt::boxed)
             .map_err(io::Error::other)
