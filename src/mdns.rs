@@ -14,6 +14,7 @@ use h3x::gm_quic::{
     qinterface::{Interface, component::Component, io::IO},
 };
 use tokio::{task::JoinSet, time};
+use tracing::Instrument;
 
 use crate::{
     parser::{packet::Packet, record::endpoint::EndpointAddr},
@@ -93,58 +94,66 @@ impl Mdns {
         hosts: Arc<Mutex<HashMap<String, Vec<EndpointAddr>>>>,
         service_name: String,
     ) {
+        let span = tracing::info_span!(target: "mdns", "mdns_tasks", service_name, nic = proto.bound_nic(), ip = %proto.bound_ip());
+
         // (1) periodic broadcaster
-        tasks.spawn({
-            let proto = proto.clone();
-            let service_name = service_name.clone();
-            async move {
-                let mut interval = time::interval(Duration::from_secs(10));
-                interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-                loop {
-                    interval.tick().await;
-                    let packet = Packet::query(service_name.clone());
-                    if let Err(e) = proto.broadcast_packet(packet).await {
-                        tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
+        tasks.spawn(
+            {
+                let proto = proto.clone();
+                let service_name = service_name.clone();
+                async move {
+                    let mut interval = time::interval(Duration::from_secs(10));
+                    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+                    loop {
+                        interval.tick().await;
+                        let packet = Packet::query(service_name.clone());
+                        if let Err(e) = proto.broadcast_packet(packet).await {
+                            tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
+                        }
                     }
                 }
             }
-        });
+            .instrument(span.clone()),
+        );
 
         // (2) responder
-        tasks.spawn({
-            let proto = proto.clone();
-            let hosts = hosts.clone();
-            let service_name = service_name.clone();
-            async move {
-                loop {
-                    let res = proto.receive_query().await;
-                    let Ok((_src, query)) = res else {
-                        break;
-                    };
+        tasks.spawn(
+            {
+                let proto = proto.clone();
+                let hosts = hosts.clone();
+                let service_name = service_name.clone();
+                async move {
+                    loop {
+                        let res = proto.receive_query().await;
+                        let Ok((_src, query)) = res else {
+                            break;
+                        };
 
-                    let packet = {
-                        let guard = hosts.lock().unwrap();
-                        let host_name = guard
-                            .keys()
-                            .cloned()
-                            .map(|h| Self::local_name(service_name.clone(), h))
-                            .collect::<HashSet<_>>();
+                        let packet = {
+                            let guard = hosts.lock().unwrap();
+                            let host_name = guard
+                                .keys()
+                                .cloned()
+                                .map(|h| Self::local_name(service_name.clone(), h))
+                                .collect::<HashSet<_>>();
 
-                        query
-                            .questions
-                            .iter()
-                            .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
-                            .then(|| Packet::answer(query.header.id, &guard))
-                    };
+                            query
+                                .questions
+                                .iter()
+                                .any(|q| host_name.iter().any(|h| h.contains(q.name.as_str())))
+                                .then(|| Packet::answer(query.header.id, &guard))
+                        };
 
-                    if let Some(packet) = packet
-                        && let Err(e) = proto.broadcast_packet(packet).await
-                    {
-                        tracing::debug!(target: "mdns", "Send response error: {}", e);
+                        if let Some(packet) = packet
+                            && let Err(e) = proto.broadcast_packet(packet).await
+                        {
+                            tracing::debug!(target: "mdns", "Send response error: {}", e);
+                        }
                     }
                 }
             }
-        });
+            .instrument(span.clone()),
+        );
     }
 
     fn poll_close(&self, cx: &mut Context<'_>) -> Poll<()> {
