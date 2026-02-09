@@ -133,7 +133,7 @@ impl H3Resolver {
     ];
 
     #[tracing::instrument(level = "debug", skip(self), err)]
-    pub async fn lookup<'n>(&self, name: &str) -> Result<RecordStream<'n>, Error> {
+    pub async fn lookup(&self, name: &str) -> Result<RecordStream, Error> {
         use crate::parser::record;
         let now = Instant::now();
         let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
@@ -229,7 +229,7 @@ impl Publish for H3Publisher {
 }
 
 impl Resolve for H3Resolver {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         self.lookup(name).map_err(io::Error::other).boxed()
     }
 }

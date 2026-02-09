@@ -45,7 +45,7 @@ impl Publish for MdnsResolver {
 }
 
 impl Resolve for MdnsResolver {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         Box::pin(async move {
             let source = Source::Mdns {
                 nic: self.bound_nic().into(),

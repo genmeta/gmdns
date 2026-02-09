@@ -123,7 +123,7 @@ impl Publish for HttpResolver {
 }
 
 impl Resolve for HttpResolver {
-    fn lookup<'r, 'n: 'r>(&'r self, name: &'n str) -> ResolveFuture<'r, 'n> {
+    fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         let lookup = async move {
             let now = Instant::now();
             let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
