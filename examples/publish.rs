@@ -3,7 +3,7 @@ use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 use clap::Parser;
 use gmdns::{parser::record::endpoint::EndpointAddr, resolvers::H3Publisher};
 use h3x::gm_quic::H3Client;
-use qdns::{Publish, SocketEndpointAddr};
+use qdns::SocketEndpointAddr;
 use rustls::{RootCertStore, SignatureScheme, pki_types::PrivateKeyDer, sign::SigningKey};
 use tracing::{Level, info};
 
@@ -176,7 +176,10 @@ async fn main() -> io::Result<()> {
         }
         info!("Publishing endpoint: {:?}", endpoint);
         let endpoint = SocketEndpointAddr::try_from(endpoint).unwrap().into();
-        resolver.publish(&opt.host, &[endpoint]).await?;
+        resolver
+            .publish(&opt.host, &[endpoint])
+            .await
+            .map_err(io::Error::other)?;
         info!("Successfully published endpoint for {}", addr);
     }
     info!("publish.ok");
