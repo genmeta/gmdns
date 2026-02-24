@@ -1,34 +1,24 @@
 use std::{fmt, io, sync::Arc};
 
-use dashmap::DashMap;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
 use h3x::gm_quic::{H3Client, prelude::ConnectServerError};
 use qdns::{EndpointAddr, Publish, PublishFuture, RecordStream, Resolve, ResolveFuture, Source};
 use reqwest::IntoUrl;
-use tokio::time::Instant;
 use tracing::debug;
 use url::Url;
 
 use crate::{MdnsPacket, parser::packet::be_packet};
 
-#[derive(Debug)]
-struct Record {
-    addrs: Vec<EndpointAddr>,
-    expire: Instant,
-}
-
 // Inner struct that holds the actual H3 client and runs on a dedicated thread
 pub struct H3Resolver {
     client: H3Client,
     base_url: Url,
-    cached_records: DashMap<String, Record>,
 }
 
 impl fmt::Debug for H3Resolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("H3Resolver")
             .field("base_url", &self.base_url)
-            .field("cached_records", &self.cached_records)
             .finish_non_exhaustive()
     }
 }
@@ -81,11 +71,7 @@ impl H3Resolver {
             )
         })?;
 
-        Ok(Self {
-            client,
-            base_url,
-            cached_records: DashMap::new(),
-        })
+        Ok(Self { client, base_url })
     }
 
     pub async fn publish(&self, name: &str, endpoints: &[EndpointAddr]) -> Result<(), Error> {
@@ -133,7 +119,6 @@ impl H3Resolver {
 
     pub async fn lookup(&self, name: &str) -> Result<RecordStream, Error> {
         use crate::parser::record;
-        let now = Instant::now();
         let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
         let source = Source::Http { server };
 
@@ -142,25 +127,11 @@ impl H3Resolver {
             return Err(Error::NoRecordFound {});
         }
 
-        // 1. Check cache (Lazy expiration)
-        if let Some(entry) = self.cached_records.get(name)
-            && entry.expire > Instant::now()
-        {
-            let endpoint_addrs: Vec<_> = entry
-                .addrs
-                .iter()
-                .map(move |ep| (source.clone(), *ep))
-                .collect();
-            return Ok(futures::stream::iter(endpoint_addrs).boxed());
-        }
-        // Expired: remove it (drop the entry lock first if needed, but DashMap handles this)
-        // We'll just fall through to fetch fresh data and overwrite it.
-
         let mut url = self.base_url.join("lookup").expect("Invalid URL");
         url.set_query(Some(&format!("host={}", name)));
         let uri: http::Uri = url.as_str().parse().expect("URL should be valid URI");
 
-        tracing::debug!("Cache miss, sending lookup request to {}", self.base_url);
+        tracing::debug!("Sending lookup request to {}", self.base_url);
         let (_req, mut resp) = self
             .client
             .new_request()
@@ -202,15 +173,6 @@ impl H3Resolver {
         if addrs.is_empty() {
             return Err(Error::NoRecordFound {});
         }
-
-        // cache the addrs
-        self.cached_records.insert(
-            name.to_string(),
-            Record {
-                addrs: addrs.clone(),
-                expire: now + std::time::Duration::from_secs(300),
-            },
-        );
 
         Ok(stream::iter(addrs.into_iter().map(move |ep| (source.clone(), ep))).boxed())
     }
