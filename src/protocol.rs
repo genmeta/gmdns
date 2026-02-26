@@ -35,7 +35,7 @@ impl MdnsSocket {
     pub fn new(device: &str, ip: IpAddr) -> io::Result<Self> {
         tracing::debug!(target: "mdns", device, %ip, "Add mdns device");
         let socket = match ip {
-            IpAddr::V4(ip) => {
+            IpAddr::V4(_ip) => {
                 let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
                 socket.set_nonblocking(true)?;
                 socket.set_reuse_address(true)?;
@@ -46,13 +46,15 @@ impl MdnsSocket {
                 socket.bind(&bind.into())?;
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 socket.bind_device(Some(device.as_bytes()))?;
-                socket.set_multicast_loop_v4(ip.is_loopback())?;
+                // Always enable multicast loopback so that mDNS services on the
+                // same host (but in different processes) can communicate.
+                socket.set_multicast_loop_v4(true)?;
                 socket.join_multicast_v4(&MULTICAST_ADDR_V4, &Ipv4Addr::UNSPECIFIED)?;
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 socket.set_multicast_if_v4(&ip)?;
                 socket
             }
-            IpAddr::V6(ip) => {
+            IpAddr::V6(_ip) => {
                 let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
                 socket.set_nonblocking(true)?;
                 socket.set_reuse_address(true)?;
@@ -63,7 +65,9 @@ impl MdnsSocket {
                 socket.bind(&bind.into())?;
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 socket.bind_device(Some(device.as_bytes()))?;
-                socket.set_multicast_loop_v6(ip.is_loopback())?;
+                // Always enable multicast loopback so that mDNS services on the
+                // same host (but in different processes) can communicate.
+                socket.set_multicast_loop_v6(true)?;
                 // TODO: 外面传进来
                 let ifindex = if_nametoindex(device)?;
                 socket.join_multicast_v6(&MULTICAST_ADDR_V6, ifindex)?;

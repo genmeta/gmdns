@@ -2,9 +2,10 @@
 // - Security: client cert required; SAN must match host; optional DNS record signature check.
 // - Storage: Redis (two keys: host and host_cert) or in-memory DashMap with TTL.
 // - Performance (per record, 64-bit, rough order of magnitude):
-//   * Memory mode: ~ key_len + dns_len + cert_len + 150..220 bytes.
+//   * Memory mode total ~= key_len + dns_len + cert_len + 150..220 bytes.
+//     Example: key=20, dns=400, cert=1200 => ~1770..1840B (~1.8KB).
 //     Breakdown: String (24B + key_len), 2x Vec (2*24B + payload), Instant (~16B),
-//     allocator + map entry overhead (roughly 64..128B, load-factor dependent).
+//     plus allocator + map entry overhead (roughly 64..128B, load-factor dependent).
 //   * Redis mode: payload stored as two keys; ~= key_len + dns_len + cert_len
 //     + redis metadata/obj overhead. In practice, 50..150B per key plus allocator
 //     and encoding costs; expect payload + 150..300B total for two keys.
