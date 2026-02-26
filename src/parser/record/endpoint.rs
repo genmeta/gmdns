@@ -1,6 +1,7 @@
 use std::{
     convert::TryFrom,
     fmt::Display,
+    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     path::Path,
 };
@@ -31,11 +32,11 @@ use crate::parser::{
 /// ### 包格式
 ///
 /// ```text
-/// +--------+-----------------+--------------------+----------------------------+
-/// | flags  | sequence(varint)| addr(s)            | signature (optional)       |
-/// +--------+-----------------+--------------------+----------------------------+
-/// | u8     | QUIC varint     | v4: 2+4 / v6: 2+16 | scheme(u16)+len(varint)+N  |
-/// +--------+-----------------+--------------------+----------------------------+
+/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
+/// | flags  | sequence(varint)| addr(s)            | isp(varint, optional)     | geo(optional)     | load(optional) | signature (optional)       |
+/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
+/// | u8     | QUIC varint     | v4: 2+4 / v6: 2+16 | VarInt                    | lat(f32)+lon(f32) | f32            | scheme(u16)+len(varint)+N  |
+/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
 /// ```
 ///
 /// ### flags (u8) 字段定义:
@@ -44,12 +45,18 @@ use crate::parser::{
 /// - bit 5 (0x20): SEQUENCED - 是否有序号
 /// - bit 4 (0x10): FORWARD - 0=直连, 1=中转
 /// - bit 3 (0x08): SIGNED - 是否有签名标志
-/// - bits 2-0: 保留位
+/// - bit 2 (0x04): ISP - 是否包含 ISP 编码
+/// - bit 1 (0x02): GEO - 是否包含 GEO 经纬度
+/// - bit 0 (0x01): LOAD - 是否包含 1 分钟负载
 ///
 /// ### 地址格式:
 /// - 直连: `port(u16)` + `IP(u32/u128)`
 /// - 中转: `outer_port(u16)` + `outer_IP(u32/u128)` + `agent_port(u16)` + `agent_IP(u32/u128)`
 /// - `sequence`: DNS 记录编号，同一编号的记录视为一个机器，可以使用多路径连接
+/// - 字段顺序: `addr` -> `isp` -> `geo` -> `load` -> `signature`
+/// - `isp`: ISP 运营商编码（VarInt）
+/// - `geo`: GEO 经纬度（lat, lon，f32）
+/// - `load`: 1 分钟负载（f32）
 /// - `signature`: 当 `SIGNED` 置位时，允许附加签名字段
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -59,16 +66,53 @@ pub struct EndpointSignature {
     signature: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct EndpointAddr {
     flags: u8,
     /// 序号，用于多路径连接，None 表示无序号
     sequence: Option<VarInt>,
+    /// ISP 运营商编码
+    isp: Option<VarInt>,
+    /// GEO 经纬度 (lat, lon)
+    geo: Option<(f32, f32)>,
+    /// 1 分钟负载
+    load: Option<f32>,
     signature: Option<EndpointSignature>,
     /// 主地址 (直连时为唯一地址，中转时为外部地址)
     pub primary: SocketAddr,
     /// 代理地址 (仅中转时使用)
     pub agent: Option<SocketAddr>,
+}
+
+impl PartialEq for EndpointAddr {
+    fn eq(&self, other: &Self) -> bool {
+        self.flags == other.flags
+            && self.sequence == other.sequence
+            && self.isp == other.isp
+            && self.geo.map(|(lat, lon)| (lat.to_bits(), lon.to_bits()))
+                == other.geo.map(|(lat, lon)| (lat.to_bits(), lon.to_bits()))
+            && self.load.map(f32::to_bits) == other.load.map(f32::to_bits)
+            && self.signature == other.signature
+            && self.primary == other.primary
+            && self.agent == other.agent
+    }
+}
+
+impl Eq for EndpointAddr {}
+
+impl Hash for EndpointAddr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.flags.hash(state);
+        self.sequence.hash(state);
+        self.isp.hash(state);
+        self.geo
+            .map(|(lat, lon)| (lat.to_bits(), lon.to_bits()))
+            .hash(state);
+        self.load.map(f32::to_bits).hash(state);
+        self.signature.hash(state);
+        self.primary.hash(state);
+        self.agent.hash(state);
+    }
 }
 
 impl EndpointAddr {
@@ -77,11 +121,17 @@ impl EndpointAddr {
     const FLAG_SEQUENCED: u8 = 0b0010_0000;
     const FLAG_FORWARD: u8 = 0b0001_0000; // 0=直连, 1=中转
     const FLAG_SIGNED: u8 = 0b0000_1000;
+    const FLAG_ISP: u8 = 0b0000_0100;
+    const FLAG_GEO: u8 = 0b0000_0010;
+    const FLAG_LOAD: u8 = 0b0000_0001;
 
     pub fn direct_v4(addr: SocketAddrV4) -> Self {
         Self {
             flags: 0, // IPv4 直连: family=0, forward=0
             sequence: None,
+            isp: None,
+            geo: None,
+            load: None,
             signature: None,
             primary: addr.into(),
             agent: None,
@@ -92,6 +142,9 @@ impl EndpointAddr {
         Self {
             flags: Self::FLAG_FAMILY, // IPv6 直连: family=1, forward=0
             sequence: None,
+            isp: None,
+            geo: None,
+            load: None,
             signature: None,
             primary: addr.into(),
             agent: None,
@@ -102,6 +155,9 @@ impl EndpointAddr {
         Self {
             flags: Self::FLAG_FORWARD, // IPv4 中转: family=0, forward=1
             sequence: None,
+            isp: None,
+            geo: None,
+            load: None,
             signature: None,
             primary: outer.into(),
             agent: Some(agent.into()),
@@ -112,6 +168,9 @@ impl EndpointAddr {
         Self {
             flags: Self::FLAG_FAMILY | Self::FLAG_FORWARD, // IPv6 中转: family=1, forward=1
             sequence: None,
+            isp: None,
+            geo: None,
+            load: None,
             signature: None,
             primary: outer.into(),
             agent: Some(agent.into()),
@@ -133,12 +192,51 @@ impl EndpointAddr {
         self.flags & Self::FLAG_SEQUENCED != 0
     }
 
+    pub fn is_isp(&self) -> bool {
+        self.flags & Self::FLAG_ISP != 0
+    }
+
+    pub fn is_geo(&self) -> bool {
+        self.flags & Self::FLAG_GEO != 0
+    }
+
+    pub fn is_load(&self) -> bool {
+        self.flags & Self::FLAG_LOAD != 0
+    }
+
     pub fn set_sequenced(&mut self, sequenced: bool) {
         if sequenced {
             self.flags |= Self::FLAG_SEQUENCED;
         } else {
             self.flags &= !Self::FLAG_SEQUENCED;
             self.sequence = None; // 清除序号
+        }
+    }
+
+    pub fn set_isp(&mut self, isp: Option<VarInt>) {
+        self.isp = isp;
+        if self.isp.is_some() {
+            self.flags |= Self::FLAG_ISP;
+        } else {
+            self.flags &= !Self::FLAG_ISP;
+        }
+    }
+
+    pub fn set_geo(&mut self, geo: Option<(f32, f32)>) {
+        self.geo = geo;
+        if self.geo.is_some() {
+            self.flags |= Self::FLAG_GEO;
+        } else {
+            self.flags &= !Self::FLAG_GEO;
+        }
+    }
+
+    pub fn set_load(&mut self, load: Option<f32>) {
+        self.load = load;
+        if self.load.is_some() {
+            self.flags |= Self::FLAG_LOAD;
+        } else {
+            self.flags &= !Self::FLAG_LOAD;
         }
     }
 
@@ -253,6 +351,18 @@ impl EndpointAddr {
             meta_len += seq.encoding_size();
         }
 
+        if let Some(isp) = &self.isp {
+            meta_len += isp.encoding_size();
+        }
+
+        if self.geo.is_some() {
+            meta_len += 8; // lat(f32) + lon(f32)
+        }
+
+        if self.load.is_some() {
+            meta_len += 4; // f32
+        }
+
         if self.is_signed()
             && let Some(sig) = &self.signature
         {
@@ -287,6 +397,18 @@ impl EndpointAddr {
             self.sequence = None;
             self.set_sequenced(false);
         }
+    }
+
+    pub fn isp(&self) -> Option<VarInt> {
+        self.isp
+    }
+
+    pub fn geo(&self) -> Option<(f32, f32)> {
+        self.geo
+    }
+
+    pub fn load(&self) -> Option<f32> {
+        self.load
     }
 
     fn flags(&self) -> u8 {
@@ -328,6 +450,19 @@ impl EndpointAddr {
                 SocketAddr::V6(addr) => buf.put_socket_addr_v6(addr),
             }
         }
+
+        if let Some(isp) = &self.isp {
+            buf.put_varint(*isp);
+        }
+
+        if let Some((lat, lon)) = self.geo {
+            buf.put_u32(lat.to_bits());
+            buf.put_u32(lon.to_bits());
+        }
+
+        if let Some(load) = self.load {
+            buf.put_u32(load.to_bits());
+        }
     }
 
     fn signed_data(&self) -> Vec<u8> {
@@ -364,6 +499,9 @@ pub fn be_endpoint_addr(input: &[u8]) -> nom::IResult<&[u8], EndpointAddr> {
     let is_sequenced = flags & EndpointAddr::FLAG_SEQUENCED != 0;
     let is_ipv6 = flags & EndpointAddr::FLAG_FAMILY != 0;
     let is_relay = flags & EndpointAddr::FLAG_FORWARD != 0;
+    let has_isp = flags & EndpointAddr::FLAG_ISP != 0;
+    let has_geo = flags & EndpointAddr::FLAG_GEO != 0;
+    let has_load = flags & EndpointAddr::FLAG_LOAD != 0;
 
     // 只有在 SEQUENCED 标志位设置时才解析 sequence
     let (remain, sequence) = if is_sequenced {
@@ -395,6 +533,28 @@ pub fn be_endpoint_addr(input: &[u8]) -> nom::IResult<&[u8], EndpointAddr> {
         (remain, None)
     };
 
+    let (remain, isp) = if has_isp {
+        let (remain, isp) = be_varint(remain)?;
+        (remain, Some(isp))
+    } else {
+        (remain, None)
+    };
+
+    let (remain, geo) = if has_geo {
+        let (remain, lat) = be_u32(remain)?;
+        let (remain, lon) = be_u32(remain)?;
+        (remain, Some((f32::from_bits(lat), f32::from_bits(lon))))
+    } else {
+        (remain, None)
+    };
+
+    let (remain, load) = if has_load {
+        let (remain, load) = be_u32(remain)?;
+        (remain, Some(f32::from_bits(load)))
+    } else {
+        (remain, None)
+    };
+
     let (remain, signature) = be_endpoint_signature(remain, flags)?;
 
     Ok((
@@ -402,6 +562,9 @@ pub fn be_endpoint_addr(input: &[u8]) -> nom::IResult<&[u8], EndpointAddr> {
         EndpointAddr {
             flags,
             sequence,
+            isp,
+            geo,
+            load,
             signature,
             primary,
             agent,
@@ -452,6 +615,9 @@ fn be_legacy_endpoint_addr_by_length(
                 EndpointAddr {
                     flags: 0, // IPv4 直连
                     sequence: None,
+                    isp: None,
+                    geo: None,
+                    load: None,
                     signature: None,
                     primary: addr.into(),
                     agent: None,
@@ -467,6 +633,9 @@ fn be_legacy_endpoint_addr_by_length(
                 EndpointAddr {
                     flags: EndpointAddr::FLAG_FORWARD, // IPv4 中转
                     sequence: None,
+                    isp: None,
+                    geo: None,
+                    load: None,
                     signature: None,
                     primary: primary.into(),
                     agent: Some(agent.into()),
@@ -481,6 +650,9 @@ fn be_legacy_endpoint_addr_by_length(
                 EndpointAddr {
                     flags: EndpointAddr::FLAG_FAMILY, // IPv6 直连
                     sequence: None,
+                    isp: None,
+                    geo: None,
+                    load: None,
                     signature: None,
                     primary: addr.into(),
                     agent: None,
@@ -496,6 +668,9 @@ fn be_legacy_endpoint_addr_by_length(
                 EndpointAddr {
                     flags: EndpointAddr::FLAG_FAMILY | EndpointAddr::FLAG_FORWARD, // IPv6 中转
                     sequence: None,
+                    isp: None,
+                    geo: None,
+                    load: None,
                     signature: None,
                     primary: primary.into(),
                     agent: Some(agent.into()),
@@ -514,10 +689,6 @@ fn be_endpoint_signature(input: &[u8], flags: u8) -> IResult<&[u8], Option<Endpo
         if !input.is_empty() {
             return Err(nom::Err::Error(make_error(input, ErrorKind::Eof)));
         }
-        return Ok((input, None));
-    }
-
-    if input.is_empty() {
         return Ok((input, None));
     }
 
@@ -712,8 +883,11 @@ mod tests {
     fn flag_bit_ops_work() {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5353);
         let mut ep = EndpointAddr {
-            flags: 0b0011_0111,
+            flags: 0b0011_0000,
             sequence: None,
+            isp: None,
+            geo: None,
+            load: None,
             signature: None,
             primary: addr.into(),
             agent: None,
@@ -724,20 +898,20 @@ mod tests {
 
         ep.set_main(true);
         assert!(ep.is_main());
-        assert_eq!(ep.flags, 0b0111_0111);
+        assert_eq!(ep.flags, 0b0111_0000);
 
         ep.set_signed(true);
         assert!(ep.is_signed());
-        assert_eq!(ep.flags, 0b0111_1111);
+        assert_eq!(ep.flags, 0b0111_1000);
 
         ep.set_main(false);
         assert!(!ep.is_main());
         assert!(ep.is_signed());
-        assert_eq!(ep.flags, 0b0011_1111);
+        assert_eq!(ep.flags, 0b0011_1000);
 
         ep.set_signed(false);
         assert!(!ep.is_signed());
-        assert_eq!(ep.flags, 0b0011_0111);
+        assert_eq!(ep.flags, 0b0011_0000);
     }
 
     #[test]
@@ -785,21 +959,30 @@ mod tests {
         let v6_outer = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 3000, 0, 0);
         let v6_agent = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 4000, 0, 0);
 
-        let cases = [
+        let mut with_meta = EndpointAddr::direct_v4(v4_outer);
+        with_meta.set_isp(Some(VarInt::from_u32(46011)));
+        with_meta.set_geo(Some((31.2304_f32, 121.4737_f32)));
+        with_meta.set_load(Some(0.42_f32));
+
+        let cases = vec![
             // IPv4 直连，带 MAIN 和 SEQUENCED 标志
             EndpointAddr {
                 flags: EndpointAddr::FLAG_MAIN | EndpointAddr::FLAG_SEQUENCED,
                 sequence: Some(VarInt::from_u32(0)),
+                isp: None,
+                geo: None,
+                load: None,
                 signature: None,
                 primary: v4_outer.into(),
                 agent: None,
             },
-            // IPv4 中转，带 SIGNED 和 SEQUENCED 标志
+            // IPv4 中转，带 SEQUENCED 标志
             EndpointAddr {
-                flags: EndpointAddr::FLAG_FORWARD
-                    | EndpointAddr::FLAG_SIGNED
-                    | EndpointAddr::FLAG_SEQUENCED,
+                flags: EndpointAddr::FLAG_FORWARD | EndpointAddr::FLAG_SEQUENCED,
                 sequence: Some(VarInt::from_u32(127)),
+                isp: None,
+                geo: None,
+                load: None,
                 signature: None,
                 primary: v4_outer.into(),
                 agent: Some(v4_agent.into()),
@@ -810,6 +993,9 @@ mod tests {
                     | EndpointAddr::FLAG_MAIN
                     | EndpointAddr::FLAG_SEQUENCED,
                 sequence: Some(VarInt::from_u32(128)),
+                isp: None,
+                geo: None,
+                load: None,
                 signature: None,
                 primary: v6_outer.into(),
                 agent: None,
@@ -820,10 +1006,15 @@ mod tests {
                     | EndpointAddr::FLAG_FORWARD
                     | EndpointAddr::FLAG_SEQUENCED,
                 sequence: Some(VarInt::from_u64((1 << 62) - 1).unwrap()),
+                isp: None,
+                geo: None,
+                load: None,
                 signature: None,
                 primary: v6_outer.into(),
                 agent: Some(v6_agent.into()),
             },
+            // IPv4 直连，带 ISP/GEO/LOAD
+            with_meta,
         ];
 
         for ep in cases {
@@ -905,5 +1096,37 @@ mod tests {
                 .verify_signature(SubjectPublicKeyInfoDer::from(spki.as_slice()))
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn optional_fields_flags_follow_values() {
+        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5353);
+        let mut ep = EndpointAddr::direct_v4(addr);
+
+        assert!(!ep.is_isp());
+        assert!(!ep.is_geo());
+        assert!(!ep.is_load());
+
+        ep.set_isp(Some(VarInt::from_u32(1)));
+        ep.set_geo(Some((1.0_f32, 2.0_f32)));
+        ep.set_load(Some(0.5_f32));
+
+        assert!(ep.is_isp());
+        assert!(ep.is_geo());
+        assert!(ep.is_load());
+        assert_eq!(ep.isp(), Some(VarInt::from_u32(1)));
+        assert_eq!(ep.geo(), Some((1.0_f32, 2.0_f32)));
+        assert_eq!(ep.load(), Some(0.5_f32));
+
+        ep.set_isp(None);
+        ep.set_geo(None);
+        ep.set_load(None);
+
+        assert!(!ep.is_isp());
+        assert!(!ep.is_geo());
+        assert!(!ep.is_load());
+        assert_eq!(ep.isp(), None);
+        assert_eq!(ep.geo(), None);
+        assert_eq!(ep.load(), None);
     }
 }
