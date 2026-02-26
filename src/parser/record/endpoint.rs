@@ -32,11 +32,21 @@ use crate::parser::{
 /// ### 包格式
 ///
 /// ```text
-/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
-/// | flags  | sequence(varint)| addr(s)            | isp(varint, optional)     | geo(optional)     | load(optional) | signature (optional)       |
-/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
-/// | u8     | QUIC varint     | v4: 2+4 / v6: 2+16 | VarInt                    | lat(f32)+lon(f32) | f32            | scheme(u16)+len(varint)+N  |
-/// +--------+-----------------+--------------------+---------------------------+-------------------+----------------+----------------------------+
+/// +--------+-----------------+--------------------+-------------------+----------------+----------------------------+
+/// | flags  | sequence(varint)| addr               | isp(optional)     | geo(optional)   | load(optional) | signature (optional)       |
+/// +--------+-----------------+--------------------+-------------------+----------------+----------------------------+
+/// | u8     | QUIC varint     | see addr layout    | VarInt            | lat(f32)+lon(f32) | f32          | scheme(u16)+len(varint)+N  |
+/// +--------+-----------------+--------------------+-------------------+----------------+----------------------------+
+///
+/// addr layout:
+/// +--------+-----------------------------------------+
+/// | kind   | addr fields                              |
+/// +--------+-----------------------------------------+
+/// | direct | port(u16) + IP(u32/u128)                 |
+/// +--------+-----------------------------------------+
+/// | relay  | outer_port(u16) + outer_IP(u32/u128)     |
+/// |        | + agent_port(u16) + agent_IP(u32/u128)   |
+/// +--------+-----------------------------------------+
 /// ```
 ///
 /// ### flags (u8) 字段定义:
@@ -44,10 +54,10 @@ use crate::parser::{
 /// - bit 6 (0x40): MAIN - 主地址标志
 /// - bit 5 (0x20): SEQUENCED - 是否有序号
 /// - bit 4 (0x10): FORWARD - 0=直连, 1=中转
-/// - bit 3 (0x08): SIGNED - 是否有签名标志
-/// - bit 2 (0x04): ISP - 是否包含 ISP 编码
-/// - bit 1 (0x02): GEO - 是否包含 GEO 经纬度
-/// - bit 0 (0x01): LOAD - 是否包含 1 分钟负载
+/// - bit 3 (0x08): ISP - 是否包含 ISP 编码
+/// - bit 2 (0x04): GEO - 是否包含 GEO 经纬度
+/// - bit 1 (0x02): LOAD - 是否包含 1 分钟负载
+/// - bit 0 (0x01): SIGNED - 是否有签名标志
 ///
 /// ### 地址格式:
 /// - 直连: `port(u16)` + `IP(u32/u128)`
@@ -120,10 +130,10 @@ impl EndpointAddr {
     const FLAG_MAIN: u8 = 0b0100_0000;
     const FLAG_SEQUENCED: u8 = 0b0010_0000;
     const FLAG_FORWARD: u8 = 0b0001_0000; // 0=直连, 1=中转
-    const FLAG_SIGNED: u8 = 0b0000_1000;
-    const FLAG_ISP: u8 = 0b0000_0100;
-    const FLAG_GEO: u8 = 0b0000_0010;
-    const FLAG_LOAD: u8 = 0b0000_0001;
+    const FLAG_ISP: u8 = 0b0000_1000;
+    const FLAG_GEO: u8 = 0b0000_0100;
+    const FLAG_LOAD: u8 = 0b0000_0010;
+    const FLAG_SIGNED: u8 = 0b0000_0001;
 
     pub fn direct_v4(addr: SocketAddrV4) -> Self {
         Self {
@@ -902,12 +912,12 @@ mod tests {
 
         ep.set_signed(true);
         assert!(ep.is_signed());
-        assert_eq!(ep.flags, 0b0111_1000);
+        assert_eq!(ep.flags, 0b0111_0001);
 
         ep.set_main(false);
         assert!(!ep.is_main());
         assert!(ep.is_signed());
-        assert_eq!(ep.flags, 0b0011_1000);
+        assert_eq!(ep.flags, 0b0011_0001);
 
         ep.set_signed(false);
         assert!(!ep.is_signed());

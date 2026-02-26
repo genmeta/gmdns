@@ -1,3 +1,14 @@
+// Server notes:
+// - Security: client cert required; SAN must match host; optional DNS record signature check.
+// - Storage: Redis (two keys: host and host_cert) or in-memory DashMap with TTL.
+// - Performance (per record, 64-bit, rough order of magnitude):
+//   * Memory mode: ~ key_len + dns_len + cert_len + 150..220 bytes.
+//     Breakdown: String (24B + key_len), 2x Vec (2*24B + payload), Instant (~16B),
+//     allocator + map entry overhead (roughly 64..128B, load-factor dependent).
+//   * Redis mode: payload stored as two keys; ~= key_len + dns_len + cert_len
+//     + redis metadata/obj overhead. In practice, 50..150B per key plus allocator
+//     and encoding costs; expect payload + 150..300B total for two keys.
+//   Tune numbers with real dns/cert sizes and target Redis version/config.
 use std::{collections::HashMap, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
