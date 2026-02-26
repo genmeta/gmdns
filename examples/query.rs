@@ -1,10 +1,14 @@
-use std::{io, path::PathBuf, sync::Arc};
+use std::{io, net::IpAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gmdns::{MdnsPacket, parser::record::RData};
+use gmdns::{MDNS_SERVICE, MdnsPacket, mdns::Mdns, parser::record::RData};
 use h3x::gm_quic::{
     BuildClientError, H3Client,
     prelude::handy::{ToCertificate, ToPrivateKey},
+};
+use nix::{
+    ifaddrs::getifaddrs,
+    sys::socket::{AddressFamily, SockaddrLike},
 };
 use rustls::RootCertStore;
 use tracing::{Level, info};
@@ -41,6 +45,10 @@ struct Options {
     /// DNS name to lookup.
     #[arg(long, default_value = "publish.test.genmeta.net")]
     host: String,
+
+    /// Local device name for mDNS query (e.g. en1). When set, perform mDNS lookup before HTTP DNS.
+    #[arg(long)]
+    mdns: Option<String>,
 }
 
 fn load_root_store_from_pem(path: &PathBuf) -> io::Result<RootCertStore> {
@@ -89,6 +97,41 @@ fn format_packet(packet: &MdnsPacket) -> String {
     output
 }
 
+fn resolve_mdns_ip(device: &str) -> io::Result<IpAddr> {
+    let ifaddrs = getifaddrs().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut v4 = None;
+    let mut v6 = None;
+
+    for ifaddr in ifaddrs {
+        if ifaddr.interface_name != device {
+            continue;
+        }
+        let Some(addr) = ifaddr.address else {
+            continue;
+        };
+        match addr.family() {
+            Some(AddressFamily::Inet) => {
+                if let Some(sockaddr) = addr.as_sockaddr_in() {
+                    v4 = Some(IpAddr::V4(sockaddr.ip()));
+                }
+            }
+            Some(AddressFamily::Inet6) => {
+                if let Some(sockaddr) = addr.as_sockaddr_in6() {
+                    v6 = Some(IpAddr::V6(sockaddr.ip()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    v4.or(v6).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("No IP found for device {device}"),
+        )
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustls::crypto::ring::default_provider()
@@ -99,6 +142,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let opt = Options::parse();
+    if let Some(mdns_device) = opt.mdns.as_deref() {
+        let mdns_ip = resolve_mdns_ip(mdns_device)?;
+        let mdns = Mdns::new(MDNS_SERVICE, mdns_ip, mdns_device)?;
+        match mdns.query(opt.host.clone()).await {
+            Ok(endpoints) => {
+                println!("mDNS Result:");
+                for ep in endpoints {
+                    println!("  {}", ep);
+                }
+            }
+            Err(e) => {
+                eprintln!("mDNS lookup failed: {}", e);
+            }
+        }
+    }
     let root_store = load_root_store_from_pem(&opt.server_ca)?;
     let cert_pem = std::fs::read(&opt.client_cert)?;
     let key_pem = std::fs::read(&opt.client_key)?;
