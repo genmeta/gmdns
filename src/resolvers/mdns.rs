@@ -1,8 +1,12 @@
-use std::{fmt, io, net::IpAddr};
+use std::{
+    fmt, io,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use futures::{
-    FutureExt, StreamExt, TryFutureExt, future,
+    FutureExt, Stream, StreamExt, TryFutureExt, future,
     stream::{self, FuturesUnordered},
 };
 use qdns::{EndpointAddr, Family, RecordStream, ResolveFuture, SocketEndpointAddr, Source};
@@ -10,6 +14,7 @@ use qinterface::{BindInterface, WeakInterface, bind_uri::BindUri, io::IO};
 
 use super::{Publish, Resolve};
 pub use crate::mdns::Mdns as MdnsResolver;
+use crate::{parser::packet::Packet, protocol::MdnsProtocol};
 
 impl MdnsResolver {
     pub fn source(&self) -> Source {
@@ -30,11 +35,7 @@ impl fmt::Display for MdnsResolver {
 }
 
 impl Publish for MdnsResolver {
-    fn publish<'a>(
-        &'a self,
-        name: &'a str,
-        packet: &'a [u8],
-    ) -> qdns::PublishFuture<'a> {
+    fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> qdns::PublishFuture<'a> {
         use crate::parser::{packet::be_packet, record::RData};
         let endpoints = be_packet(packet)
             .map(|(_, pkt)| {
@@ -139,6 +140,48 @@ impl MdnsResolvers {
                 .entry(entry.key().clone())
                 .or_insert_with(|| entry.value().clone());
         });
+    }
+
+    /// Discover mDNS broadcasts from all active resolvers.
+    ///
+    /// Returns a stream of `(SocketAddr, Packet)` pairs by polling all
+    /// underlying protocols concurrently. Unlike per-resolver `discover()`,
+    /// this uses a single `Box::pin` allocation for the combined stream.
+    pub fn discover(&self) -> impl Stream<Item = (SocketAddr, Packet)> + use<> {
+        let mut protos = Vec::new();
+        self.for_each_resolver(|resolver| {
+            protos.push(resolver.protocol());
+        });
+
+        async fn receive_one(
+            proto: Arc<MdnsProtocol>,
+        ) -> Option<((SocketAddr, Packet), Arc<MdnsProtocol>)> {
+            let result = proto.receive_boardcast().await.ok()?;
+            Some((result, proto))
+        }
+
+        let mut pending = protos
+            .into_iter()
+            .map(receive_one)
+            .collect::<FuturesUnordered<_>>();
+
+        Box::pin(stream::poll_fn(move |cx| {
+            use std::task::Poll;
+            loop {
+                match pending.poll_next_unpin(cx) {
+                    Poll::Ready(Some(Some((item, proto)))) => {
+                        pending.push(receive_one(proto));
+                        return Poll::Ready(Some(item));
+                    }
+                    Poll::Ready(Some(None)) => {
+                        // This resolver's protocol disconnected, skip it
+                        continue;
+                    }
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }))
     }
 }
 

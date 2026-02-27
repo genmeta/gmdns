@@ -230,7 +230,7 @@ impl Mdns {
     }
 
     #[inline]
-    fn protocol(&self) -> Arc<MdnsProtocol> {
+    pub(crate) fn protocol(&self) -> Arc<MdnsProtocol> {
         self.inner
             .lock()
             .expect("Mdns inner lock poisoned")
