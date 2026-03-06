@@ -35,6 +35,10 @@ impl MdnsSocket {
     pub fn new(device: &str, ip: IpAddr) -> io::Result<Self> {
         tracing::debug!(target: "mdns", device, %ip, "Add mdns device");
         let socket = match ip {
+            #[cfg_attr(
+                not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")),
+                allow(clippy::unused_variables)
+            )]
             IpAddr::V4(ip) => {
                 let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
                 socket.set_nonblocking(true)?;
