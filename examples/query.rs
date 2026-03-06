@@ -1,12 +1,7 @@
 use std::{io, net::IpAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use gmdns::{
-    MdnsPacket,
-    mdns::Mdns,
-    parser::record::RData,
-    wire::be_multi_response,
-};
+use gmdns::{MdnsPacket, mdns::Mdns, parser::record::RData, wire::be_multi_response};
 use h3x::gm_quic::{
     BuildClientError, H3Client,
     prelude::handy::{ToCertificate, ToPrivateKey},
@@ -105,7 +100,7 @@ fn format_packet(packet: &MdnsPacket) -> String {
 }
 
 fn resolve_mdns_ip(device: &str) -> io::Result<IpAddr> {
-    let ifaddrs = getifaddrs().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let ifaddrs = getifaddrs().map_err(io::Error::other)?;
     let mut v4 = None;
     let mut v6 = None;
 
