@@ -1,5 +1,5 @@
 use gmdns::parser::{packet::be_packet, record::RData};
-use h3x::agent::RemoteAgent;
+use h3x::quic::agent::RemoteAgent;
 use tracing::warn;
 
 use crate::error::{AppError, normalize_host};
@@ -59,7 +59,7 @@ impl DomainPolicies {
 // Certificate helpers
 // ---------------------------------------------------------------------------
 
-pub fn extract_client_dns_sans(agent: &RemoteAgent) -> Vec<String> {
+pub fn extract_client_dns_sans(agent: &(impl RemoteAgent + ?Sized)) -> Vec<String> {
     use x509_parser::prelude::*;
 
     let Some(leaf) = agent.cert_chain().first() else {
@@ -81,7 +81,7 @@ pub fn extract_client_dns_sans(agent: &RemoteAgent) -> Vec<String> {
     out
 }
 
-pub fn client_allowed_host(agent: &RemoteAgent) -> Result<String, AppError> {
+pub fn client_allowed_host(agent: &(impl RemoteAgent + ?Sized)) -> Result<String, AppError> {
     let mut sans = extract_client_dns_sans(agent)
         .into_iter()
         .filter_map(|h| normalize_host(&h).ok())
@@ -99,7 +99,7 @@ pub fn client_allowed_host(agent: &RemoteAgent) -> Result<String, AppError> {
 pub fn validate_dns_packet(
     packet: &[u8],
     require_signature: bool,
-    agent: &RemoteAgent,
+    agent: &(impl RemoteAgent + ?Sized),
 ) -> Result<String, AppError> {
     let (remaining, dns_packet) =
         be_packet(packet).map_err(|e| AppError::InvalidDnsPacket(e.to_string()))?;
