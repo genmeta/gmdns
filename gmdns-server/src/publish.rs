@@ -120,6 +120,14 @@ impl Service for PublishSvc {
 /// Unified publish handler: stores the record keyed by (host, cert-fingerprint).
 /// Both Standard and OpenMulti policies follow the same storage path;
 /// the only policy difference (SAN check) is already enforced in the caller.
+///
+/// Certificate fingerprint is the publish-source identity. In PKI ecosystems,
+/// a single domain name can have multiple valid certificates (from different CAs,
+/// or issued at different times for rotation/failover/multi-region scenarios).
+/// Using fingerprint as part of the storage key enables:
+/// - Multi-publisher coexistence: different cert holders can publish the same domain
+/// - Idempotent updates: re-publishing from same cert source (same fingerprint) overwrites old data
+/// - Client choice: lookups return all active records, client picks which certificate to trust
 pub async fn publish_record(
     state: &AppState,
     host: &str,

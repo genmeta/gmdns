@@ -59,6 +59,9 @@ pub struct StoredRecord {
     /// Unix timestamp (seconds) after which this entry is considered stale.
     pub expire_unix_secs: u64,
     /// SHA-256 fingerprint of the publisher's leaf certificate.
+    /// Serves as the publisher's identity: uniquely identifies a certificate among multiple
+    /// valid certs that may be issued for the same domain (from different CAs, at different times,
+    /// for different regions, etc.). Used as storage key to enable multi-publisher scenarios.
     pub fingerprint: [u8; 32],
     /// Serialised DNS packet bytes.
     pub dns: Vec<u8>,
@@ -227,8 +230,15 @@ pub struct Record {
 
 /// Unified in-memory storage: host → { cert_fingerprint → Record }.
 /// Both Standard and OpenMulti policies share this map.
-/// Per-fingerprint keying ensures the same source overwrites its own entry
-/// while different sources (different server IDs / certs) coexist independently.
+///
+/// Per-fingerprint keying design supports PKI's multi-certificate model:
+/// A single domain can have multiple valid certificates issued by different CAs,
+/// or by the same CA at different times (certificate rotation, multi-region deployment, etc.).
+/// Each certificate has a unique fingerprint as its identity.
+///
+/// - Same certificate (same fingerprint) republishing → overwrites the previous record
+/// - Different certificates (different fingerprints) for same domain → coexist independently
+/// - Clients query get all valid records and choose which one to use
 #[derive(Clone)]
 pub struct MemoryStorage {
     pub records: Arc<DashMap<String, HashMap<[u8; 32], Record>>>,
