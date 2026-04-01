@@ -17,7 +17,7 @@ flume = "0.12"
 futures = "0.3"
 nix = { version = "0.31", features = ["net"] }
 nom = "8"
-qdns = { git = "ssh://git@github.com/genmeta/dquic.git", branch = "feat/v0.5" }
+qresolve = { git = "ssh://git@github.com/genmeta/dquic.git", branch = "feat/v0.5" }
 qinterface = { git = "ssh://git@github.com/genmeta/dquic.git", branch = "feat/v0.5" }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = [

@@ -3,7 +3,7 @@ use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 use clap::Parser;
 use gmdns::{parser::record::endpoint::EndpointAddr, resolvers::H3Publisher};
 use h3x::gm_quic::H3Client;
-use qdns::Publish;
+use qresolve::Publish;
 use rustls::{RootCertStore, SignatureScheme, pki_types::PrivateKeyDer, sign::SigningKey};
 use tracing::{Level, info};
 

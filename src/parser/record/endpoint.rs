@@ -15,7 +15,7 @@ use nom::{
     error::{ErrorKind, make_error},
     number::streaming::{be_u8, be_u16, be_u32, be_u128},
 };
-use qdns::SocketEndpointAddr;
+use qresolve::SocketEndpointAddr;
 use rustls::{SignatureScheme, pki_types::SubjectPublicKeyInfoDer, sign::SigningKey};
 
 use crate::parser::{

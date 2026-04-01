@@ -6,7 +6,7 @@ use std::{
 
 use dashmap::DashMap;
 use futures::{StreamExt, TryFutureExt, stream};
-use qdns::{Publish, PublishFuture, Resolve, ResolveFuture, Source};
+use qresolve::{Publish, PublishFuture, Resolve, ResolveFuture, Source};
 use reqwest::{Client, IntoUrl, StatusCode, Url};
 use tokio::time::Instant;
 
@@ -14,7 +14,7 @@ use crate::parser::packet::be_packet;
 
 #[derive(Debug)]
 struct Record {
-    addrs: Vec<qdns::EndpointAddr>,
+    addrs: Vec<qresolve::EndpointAddr>,
     expire: Instant,
 }
 
@@ -127,7 +127,7 @@ impl Resolve for HttpResolver {
                 let endpoint_addrs: Vec<_> = record
                     .addrs
                     .iter()
-                    .map(|e: &qdns::EndpointAddr| (soource.clone(), *e))
+                    .map(|e: &qresolve::EndpointAddr| (soource.clone(), *e))
                     .collect();
                 return Ok(stream::iter(endpoint_addrs).boxed());
             }
@@ -150,7 +150,7 @@ impl Resolve for HttpResolver {
                 .filter_map(|answer| match answer.data() {
                     record::RData::E(ep) => {
                         let socket_ep = ep.clone().try_into().ok()?;
-                        Some(qdns::EndpointAddr::Socket(socket_ep))
+                        Some(qresolve::EndpointAddr::Socket(socket_ep))
                     }
                     _ => {
                         tracing::debug!(?answer, "Ignored record");

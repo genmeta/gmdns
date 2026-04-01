@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream};
-use qdns::{EndpointAddr, Family, Publish, Resolve, ResolveFuture, Source};
+use qresolve::{EndpointAddr, Family, Publish, Resolve, ResolveFuture, Source};
 use qinterface::device::Devices;
 use snafu::Report;
 use tokio::io;

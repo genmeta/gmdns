@@ -9,7 +9,7 @@ use futures::{
     FutureExt, Stream, StreamExt, TryFutureExt, future,
     stream::{self, FuturesUnordered},
 };
-use qdns::{EndpointAddr, Family, RecordStream, ResolveFuture, SocketEndpointAddr, Source};
+use qresolve::{EndpointAddr, Family, RecordStream, ResolveFuture, SocketEndpointAddr, Source};
 use qinterface::{BindInterface, WeakInterface, bind_uri::BindUri, io::IO};
 
 use super::{Publish, Resolve};
@@ -35,7 +35,7 @@ impl fmt::Display for MdnsResolver {
 }
 
 impl Publish for MdnsResolver {
-    fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> qdns::PublishFuture<'a> {
+    fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> qresolve::PublishFuture<'a> {
         use crate::parser::{packet::be_packet, record::RData};
         let endpoints = be_packet(packet)
             .map(|(_, pkt)| {
