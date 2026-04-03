@@ -121,8 +121,6 @@ impl Resolvers {
     ) -> Result<impl Stream<Item = (Source, EndpointAddr)> + use<>, DnsErrors> {
         let mut errors = vec![];
 
-        tracing::info!("Resolvers::lookup({name}): starting with {} resolvers", self.resolvers.len());
-
         let mut lookups = stream::FuturesUnordered::from_iter(
             (self.resolvers.clone().into_iter()).map(|resolver| {
                 let resolver = resolver.clone();
@@ -133,18 +131,9 @@ impl Resolvers {
 
         let endpoints = loop {
             match lookups.next().await {
-                Some((Ok(endpoints), resolver)) => {
-                    tracing::info!("Resolvers::lookup({name}): resolver `{resolver}` succeeded");
-                    break endpoints;
-                }
-                Some((Err(error), resolver)) => {
-                    tracing::info!("Resolvers::lookup({name}): resolver `{resolver}` failed: {error}");
-                    errors.push((resolver, error));
-                }
-                None => {
-                    tracing::warn!("Resolvers::lookup({name}): all resolvers failed");
-                    return Err(DnsErrors { errors });
-                }
+                Some((Ok(endpoints), _)) => break endpoints,
+                Some((Err(error), resolver)) => errors.push((resolver, error)),
+                None => return Err(DnsErrors { errors }),
             }
         };
 
