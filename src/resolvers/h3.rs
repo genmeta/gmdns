@@ -144,16 +144,9 @@ impl H3Resolver {
         let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
         let source = Source::Http { server };
 
-        // 剥离端口号，只取域名部分
-        let domain = match name.rsplit_once(':') {
-            Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h,
-            _ => name,
-        };
-
-        // 0. Skip raw IP addresses — they cannot be resolved by a DNS server
-        if !super::is_resolvable_name(name) {
+        let Some(domain) = super::resolvable_name(name) else {
             return Err(Error::NoRecordFound {});
-        }
+        };
 
         // 1. Exclude certain domains from lookup
         if Self::EXCLUDED_DOMAINS.contains(&domain) {
@@ -172,7 +165,7 @@ impl H3Resolver {
             return Err(Error::NoRecordFound {});
         }
 
-        if let Some(record) = self.cached_records.get(name) {
+        if let Some(record) = self.cached_records.get(domain) {
             let addrs = record.addrs.clone();
             let stream = stream::iter(addrs.into_iter().map(move |ep| (source.clone(), ep)));
             return Ok(stream.boxed());
@@ -241,7 +234,7 @@ impl H3Resolver {
         }
 
         self.cached_records.insert(
-            name.to_string(),
+            domain.to_string(),
             Record {
                 addrs: addrs.clone(),
                 expire: now + positive_ttl,

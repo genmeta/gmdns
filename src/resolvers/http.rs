@@ -116,10 +116,9 @@ impl Publish for HttpResolver {
 impl Resolve for HttpResolver {
     fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         let lookup = async move {
-            // Skip raw IP addresses — they cannot be resolved by a DNS server
-            if !super::is_resolvable_name(name) {
+            let Some(domain) = super::resolvable_name(name) else {
                 return Err(Error::NoRecordFound {});
-            }
+            };
 
             let now = Instant::now();
             let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
@@ -128,7 +127,7 @@ impl Resolve for HttpResolver {
             use crate::parser::record;
             self.cached_records
                 .retain(|_host, Record { expire, .. }| *expire < now);
-            if let Some(record) = self.cached_records.get(name) {
+            if let Some(record) = self.cached_records.get(domain) {
                 let endpoint_addrs: Vec<_> = record
                     .addrs
                     .iter()
@@ -139,7 +138,7 @@ impl Resolve for HttpResolver {
             let response = self
                 .http_client
                 .get(self.base_url.join("lookup").expect("Invalid URL"))
-                .query(&[("host", name)])
+                .query(&[("host", domain)])
                 .send()
                 .await;
 
@@ -169,7 +168,7 @@ impl Resolve for HttpResolver {
 
             // cache the addrs
             self.cached_records.insert(
-                name.to_string(),
+                domain.to_string(),
                 Record {
                     addrs: addrs.clone(),
                     expire: now + std::time::Duration::from_secs(300),
