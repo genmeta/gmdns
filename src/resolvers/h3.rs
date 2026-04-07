@@ -176,7 +176,7 @@ impl H3Resolver {
         url.set_query(Some(&format!("host={}", domain)));
         let uri: http::Uri = url.as_str().parse().expect("URL should be valid URI");
 
-        tracing::debug!("Sending lookup request to {}", self.base_url);
+        tracing::debug!("sending lookup request to {}", self.base_url);
         let (_req, mut resp) = self
             .client
             .new_request()
@@ -184,7 +184,7 @@ impl H3Resolver {
             .await
             .map_err(|source| Error::H3Request { source })?;
 
-        tracing::debug!("Received response with status {}", resp.status());
+        tracing::debug!("received response with status {}", resp.status());
         match resp.status() {
             http::StatusCode::OK => {}
             http::StatusCode::NOT_FOUND => {
@@ -217,11 +217,11 @@ impl H3Resolver {
                     .filter_map(|answer| match answer.data() {
                         record::RData::E(ep) => {
                             let socket_ep = ep.clone().try_into().ok()?;
-                            info!(?socket_ep, "Parsed endpoint from record");
+                            info!(?socket_ep, "parsed endpoint from record");
                             Some(qresolve::EndpointAddr::Socket(socket_ep))
                         }
                         _ => {
-                            tracing::debug!(?answer, "Ignored record");
+                            tracing::debug!(?answer, "ignored record");
                             None
                         }
                     }),

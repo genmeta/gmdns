@@ -5,9 +5,9 @@ use x509_parser::prelude::FromDer;
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum SignError {
-    #[snafu(display("Unsupported signature scheme {scheme:?}"))]
+    #[snafu(display("unsupported signature scheme {scheme:?}"))]
     UnsupportedScheme { scheme: SignatureScheme },
-    #[snafu(display("Crypto error: {source}"))]
+    #[snafu(display("crypto error"))]
     Crypto {
         #[snafu(source(false))]
         source: rustls::Error,
@@ -23,15 +23,15 @@ impl From<rustls::Error> for SignError {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum VerifyError {
-    #[snafu(display("Unsupported signature scheme {scheme:?}"))]
+    #[snafu(display("unsupported signature scheme {scheme:?}"))]
     UnsupportedScheme { scheme: SignatureScheme },
-    #[snafu(display("Invalid Certificate: {details}"))]
+    #[snafu(display("invalid certificate: {details}"))]
     InvalidCertificate { details: String },
-    #[snafu(display("Invalid PEM: {source}"))]
+    #[snafu(display("invalid PEM"))]
     InvalidPem { source: std::io::Error },
-    #[snafu(display("Invalid Base64: {source}"))]
+    #[snafu(display("invalid base64"))]
     InvalidBase64 { source: base64::DecodeError },
-    #[snafu(display("IO Error: {source}"))]
+    #[snafu(display("IO error"))]
     Io { source: std::io::Error },
 }
 

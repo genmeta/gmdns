@@ -32,13 +32,13 @@ impl Service for PublishSvc {
     fn serve<'s>(&self, request: &'s mut Request, response: &'s mut Response) -> Self::Future<'s> {
         let state = self.state.clone();
         Box::pin(async move {
-            info!("Received publish request");
+            info!("received publish request");
 
             let params = parse_query_params(&request.uri());
-            info!("Query params: {:?}", params);
+            info!("query params: {:?}", params);
 
             let Some(host) = params.get("host") else {
-                warn!("Missing host parameter");
+                warn!("missing host parameter");
                 write_error(response, AppError::MissingHostParam).await;
                 return;
             };
@@ -54,7 +54,7 @@ impl Service for PublishSvc {
 
             // Require a valid client certificate for all publish requests.
             let Some(agent) = request.agent().cloned() else {
-                warn!("Missing client certificate");
+                warn!("missing client certificate");
                 write_error(response, AppError::MissingClientCertificate).await;
                 return;
             };
@@ -67,7 +67,7 @@ impl Service for PublishSvc {
                 let allowed = match client_allowed_host(agent.as_ref()) {
                     Ok(h) => h,
                     Err(e) => {
-                        warn!("Client certificate domain not allowed: {:?}", e);
+                        warn!("client certificate domain not allowed: {:?}", e);
                         write_error(response, e).await;
                         return;
                     }
@@ -82,7 +82,7 @@ impl Service for PublishSvc {
             let body = match request.read_to_bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    warn!("Failed to read request body: {:?}", e);
+                    warn!("failed to read request body: {:?}", e);
                     write_error(response, AppError::InvalidDnsPacket(e.to_string())).await;
                     return;
                 }

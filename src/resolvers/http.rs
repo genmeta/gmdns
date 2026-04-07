@@ -157,7 +157,7 @@ impl Resolve for HttpResolver {
                         Some(qresolve::EndpointAddr::Socket(socket_ep))
                     }
                     _ => {
-                        tracing::debug!(?answer, "Ignored record");
+                        tracing::debug!(?answer, "ignored record");
                         None
                     }
                 })

@@ -106,7 +106,7 @@ impl Mdns {
         }
 
         let Ok((proto, route)) = MdnsProtocol::new(device, ip) else {
-            tracing::debug!(target: "mdns", device, %ip, "Failed to reinit mdns protocol");
+            tracing::debug!(target: "mdns", device, %ip, "failed to reinit mdns protocol");
             return;
         };
         inner.proto = Arc::new(proto);
@@ -145,7 +145,7 @@ impl Mdns {
                         interval.tick().await;
                         let packet = Packet::query(service_name.clone());
                         if let Err(e) = proto.broadcast_packet(packet).await {
-                            tracing::debug!(target: "mdns", "Broadcast packet error: {}", e);
+                            tracing::debug!(target: "mdns", "broadcast packet error: {}", e);
                         }
                     }
                 }
@@ -184,7 +184,7 @@ impl Mdns {
                         if let Some(packet) = packet
                             && let Err(e) = proto.broadcast_packet(packet).await
                         {
-                            tracing::debug!(target: "mdns", "Send response error: {}", e);
+                            tracing::debug!(target: "mdns", "send response error: {}", e);
                         }
                     }
                 }

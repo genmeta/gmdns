@@ -33,7 +33,7 @@ const MAX_DEQUE_SIZE: usize = 64;
 
 impl MdnsSocket {
     pub fn new(device: &str, ip: IpAddr) -> io::Result<Self> {
-        tracing::debug!(target: "mdns", device, %ip, "Add mdns device");
+        tracing::debug!(target: "mdns", device, %ip, "add mdns device");
         let socket = match ip {
             #[cfg_attr(
                 not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")),
@@ -308,7 +308,7 @@ impl MdnsProtocol {
                     .answers
                     .iter()
                     .inspect(|answer| {
-                        tracing::debug!(target: "mdns", ?answer, "Recv response");
+                        tracing::debug!(target: "mdns", ?answer, "recv response");
                     })
                     .filter(|answer| {
                         if answer.name != local_name {
@@ -324,7 +324,7 @@ impl MdnsProtocol {
                     .filter_map(|answer| match &answer.data {
                         E(e) => Some(e.clone()),
                         _ => {
-                            tracing::debug!(target: "mdns", ?answer, "Ignored record");
+                            tracing::debug!(target: "mdns", ?answer, "ignored record");
                             None
                         }
                     })
