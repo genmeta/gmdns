@@ -5,9 +5,10 @@ mod policy;
 mod publish;
 mod storage;
 
-use std::{io, sync::Arc};
+use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 
 use clap::Parser;
+use gmdns::{MdnsEndpoint, MdnsPacket};
 use h3x::{
     dquic::prelude::{
         BindUri,
@@ -20,11 +21,11 @@ use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    config::{Config, Options, PolicyKind},
+    config::{Config, Options, PolicyKind, SeedRecordConfig},
     lookup::LookupSvc,
     policy::{DomainPolicies, DomainPolicy, PolicyRule},
     publish::PublishSvc,
-    storage::{AppState, MemoryStorage, Storage},
+    storage::{AppState, MemoryStorage, SeedRecords, Storage},
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,40 @@ fn load_root_store_from_pem(pem: &[u8]) -> io::Result<RootCertStore> {
     let mut store = RootCertStore::empty();
     store.add_parsable_certificates(certs);
     Ok(store)
+}
+
+fn build_seed_records(seed_records: &[SeedRecordConfig]) -> io::Result<SeedRecords> {
+    let mut records = HashMap::new();
+
+    for seed_record in seed_records {
+        if seed_record.endpoints.is_empty() {
+            continue;
+        }
+
+        let host = error::normalize_host(&seed_record.host)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+
+        let endpoints = seed_record
+            .endpoints
+            .iter()
+            .map(|addr| match addr {
+                SocketAddr::V4(addr) => MdnsEndpoint::direct_v4(*addr),
+                SocketAddr::V6(addr) => MdnsEndpoint::direct_v6(*addr),
+            })
+            .collect::<Vec<_>>();
+
+        let mut hosts = HashMap::new();
+        hosts.insert(host.clone(), endpoints);
+
+        records
+            .entry(host.clone())
+            .or_insert_with(Vec::new)
+            .push((MdnsPacket::answer(0, &hosts).to_bytes(), Vec::new()));
+
+        info!(host = %host, endpoint_count = seed_record.endpoints.len(), "seed_records.loaded");
+    }
+
+    Ok(Arc::new(records))
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
     let config = config.expand_paths();
+    let seed_records = build_seed_records(&config.seed_records)?;
 
     // Build storage backend.
     let storage = match config.redis.clone() {
@@ -117,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         require_signature: config.require_signature,
         ttl_secs: config.ttl_secs,
         policies,
+        seed_records,
     };
 
     let cert_pem = std::fs::read(&config.cert)?;

@@ -258,6 +258,9 @@ pub enum Storage {
     Memory(MemoryStorage),
 }
 
+pub type LookupRecord = (Vec<u8>, Vec<u8>);
+pub type SeedRecords = Arc<HashMap<String, Vec<LookupRecord>>>;
+
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
@@ -268,4 +271,5 @@ pub struct AppState {
     pub require_signature: bool,
     pub ttl_secs: u64,
     pub policies: Arc<DomainPolicies>,
+    pub seed_records: SeedRecords,
 }

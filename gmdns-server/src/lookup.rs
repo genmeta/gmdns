@@ -1,11 +1,20 @@
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+};
+
 use futures::future::BoxFuture;
+use gmdns::{
+    MdnsPacket,
+    parser::{packet::be_packet, record::RData},
+};
 use h3x::server::{Request, Response, Service};
 use redis::AsyncCommands;
 use tracing::debug;
 
 use crate::{
     error::{AppError, normalize_host, parse_query_params},
-    storage::{AppState, MultiResponse, Storage, StoredRecord, unix_now_secs},
+    storage::{AppState, LookupRecord, MultiResponse, Storage, StoredRecord, unix_now_secs},
 };
 
 // ---------------------------------------------------------------------------
@@ -16,6 +25,45 @@ pub enum LookupResult {
     NotFound,
     /// Multiple records, newest-first.
     Multi(MultiResponse),
+}
+
+type EndpointKey = (SocketAddr, Option<SocketAddr>);
+
+fn normalize_lookup_records(records: Vec<LookupRecord>) -> Vec<LookupRecord> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (dns_bytes, cert_bytes) in records {
+        let Ok((_, packet)) = be_packet(&dns_bytes) else {
+            normalized.push((dns_bytes, cert_bytes));
+            continue;
+        };
+
+        let mut emitted_endpoint = false;
+
+        for answer in &packet.answers {
+            let RData::E(endpoint) = answer.data() else {
+                continue;
+            };
+
+            emitted_endpoint = true;
+            let key: EndpointKey = (endpoint.addr(), endpoint.agent_addr());
+
+            if !seen.insert(key) {
+                continue;
+            }
+
+            let mut hosts = HashMap::new();
+            hosts.insert(answer.name().to_string(), vec![endpoint.clone()]);
+            normalized.push((MdnsPacket::answer(0, &hosts).to_bytes(), cert_bytes.clone()));
+        }
+
+        if !emitted_endpoint {
+            normalized.push((dns_bytes, cert_bytes));
+        }
+    }
+
+    normalized
 }
 
 // ---------------------------------------------------------------------------
@@ -36,7 +84,7 @@ async fn perform_lookup_multi(
     host: &str,
     limit: Option<usize>,
 ) -> Result<LookupResult, AppError> {
-    match &state.storage {
+    let mut records = match &state.storage {
         Storage::Redis(pool) => {
             let mut conn = pool.get().await.map_err(|e| AppError::Redis {
                 message: e.to_string(),
@@ -77,15 +125,11 @@ async fn perform_lookup_multi(
                 })
                 .collect();
 
-            if records.is_empty() {
-                Ok(LookupResult::NotFound)
-            } else {
-                Ok(LookupResult::Multi(MultiResponse::new(records)))
-            }
+            records
         }
         Storage::Memory(mem) => {
             let now = tokio::time::Instant::now();
-            let result = if let Some(mut entry) = mem.records.get_mut(host) {
+            if let Some(mut entry) = mem.records.get_mut(host) {
                 // Evict expired entries in-place.
                 entry.retain(|_, r| r.expire > now);
                 // Sort newest-first by published_at.
@@ -98,14 +142,20 @@ async fn perform_lookup_multi(
                     .collect::<Vec<_>>()
             } else {
                 vec![]
-            };
-
-            if result.is_empty() {
-                Ok(LookupResult::NotFound)
-            } else {
-                Ok(LookupResult::Multi(MultiResponse::new(result)))
             }
         }
+    };
+
+    if let Some(seed_records) = state.seed_records.get(host) {
+        records.extend(seed_records.iter().cloned());
+    }
+
+    let records = normalize_lookup_records(records);
+
+    if records.is_empty() {
+        Ok(LookupResult::NotFound)
+    } else {
+        Ok(LookupResult::Multi(MultiResponse::new(records)))
     }
 }
 
@@ -135,7 +185,7 @@ pub struct LookupSvc {
 /// with header `x-record-format: multi`.
 ///
 /// Optional query param `limit=N` caps the number of records returned.
-/// Sort order: newest published first.
+/// Dynamic records are newest-first; configured seed records are appended after them.
 pub async fn lookup_with_cert(state: AppState, request: &mut Request, response: &mut Response) {
     let params = parse_query_params(&request.uri());
     let Some(host) = params.get("host") else {

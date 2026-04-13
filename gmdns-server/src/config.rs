@@ -60,6 +60,10 @@ pub struct Config {
     /// Domain-policy rules (first match wins; unlisted domains use Standard).
     #[serde(default)]
     pub domain_policies: Vec<PolicyConfig>,
+
+    /// Static seed records returned on lookup in addition to dynamic published records.
+    #[serde(default)]
+    pub seed_records: Vec<SeedRecordConfig>,
 }
 
 impl Config {
@@ -121,6 +125,16 @@ pub struct PolicyConfig {
     pub host: String,
     /// Policy to apply.
     pub policy: PolicyKind,
+}
+
+/// One statically configured seed record group.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SeedRecordConfig {
+    /// Exact host to seed.
+    pub host: String,
+    /// Preloaded endpoint list for this host.
+    pub endpoints: Vec<SocketAddr>,
 }
 
 /// Serialisable policy kind.
