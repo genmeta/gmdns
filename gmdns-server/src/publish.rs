@@ -5,7 +5,7 @@ use h3x::{
 };
 use redis::AsyncCommands;
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     error::{AppError, normalize_host, parse_query_params},
@@ -32,10 +32,10 @@ impl Service for PublishSvc {
     fn serve<'s>(&self, request: &'s mut Request, response: &'s mut Response) -> Self::Future<'s> {
         let state = self.state.clone();
         Box::pin(async move {
-            info!("received publish request");
+            debug!("received publish request");
 
             let params = parse_query_params(&request.uri());
-            info!("query params: {:?}", params);
+            debug!("query params: {:?}", params);
 
             let Some(host) = params.get("host") else {
                 warn!("missing host parameter");
@@ -50,7 +50,7 @@ impl Service for PublishSvc {
                     return;
                 }
             };
-            info!(host = %host, "publish.host");
+            debug!(host = %host, "publish.host");
 
             // Require a valid client certificate for all publish requests.
             let Some(agent) = request.agent().cloned() else {
@@ -67,7 +67,7 @@ impl Service for PublishSvc {
                 let allowed = match client_allowed_host(agent.as_ref()) {
                     Ok(h) => h,
                     Err(e) => {
-                        warn!("client certificate domain not allowed: {:?}", e);
+                        warn!(error = %snafu::Report::from_error(&e), "client certificate domain not allowed");
                         write_error(response, e).await;
                         return;
                     }
@@ -82,7 +82,7 @@ impl Service for PublishSvc {
             let body = match request.read_to_bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    warn!("failed to read request body: {:?}", e);
+                    warn!(error = %snafu::Report::from_error(&e), "failed to read request body");
                     write_error(
                         response,
                         AppError::InvalidDnsPacket {

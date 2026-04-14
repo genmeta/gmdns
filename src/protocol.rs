@@ -205,14 +205,14 @@ impl PacketRouter {
                         tracing::debug!(
                             target: "mdns",
                             %query_id, %error,
-                            "Failed to route response for query id"
+                            "failed to route response for query id"
                         );
                     }
                 }
                 None => tracing::debug!(
                     target: "mdns",
                     %query_id,
-                    "Received response for query id, but no such kquery registered"
+                    "received response for query id, but no such query registered"
                 ),
             },
             (false, _) => {
@@ -316,7 +316,7 @@ impl MdnsProtocol {
                                 target: "mdns",
                                 answer_name = answer.name,
                                 local_name,
-                                "Ignored answer for different service name",
+                                "ignored answer for different service name",
                             );
                         }
                         answer.name == local_name

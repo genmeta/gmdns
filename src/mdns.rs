@@ -145,7 +145,7 @@ impl Mdns {
                         interval.tick().await;
                         let packet = Packet::query(service_name.clone());
                         if let Err(e) = proto.broadcast_packet(packet).await {
-                            tracing::debug!(target: "mdns", "broadcast packet error: {}", e);
+                            tracing::debug!(target: "mdns", error = %snafu::Report::from_error(&e), "broadcast packet error");
                         }
                     }
                 }
@@ -184,7 +184,7 @@ impl Mdns {
                         if let Some(packet) = packet
                             && let Err(e) = proto.broadcast_packet(packet).await
                         {
-                            tracing::debug!(target: "mdns", "send response error: {}", e);
+                            tracing::debug!(target: "mdns", error = %snafu::Report::from_error(&e), "send response error");
                         }
                     }
                 }
@@ -224,7 +224,7 @@ impl Mdns {
         tracing::trace!(
             target: "mdns",
             %local_name, ?eps,
-            "Adding host with addresses",
+            "adding host with addresses",
         );
         guard.insert(local_name, eps);
     }

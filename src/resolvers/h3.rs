@@ -8,7 +8,7 @@ use qresolve::{
 };
 use reqwest::IntoUrl;
 use tokio::time::Instant;
-use tracing::{debug, info};
+use tracing::debug;
 use url::Url;
 
 use crate::{MdnsPacket, parser::packet::be_packet, wire::be_multi_response};
@@ -96,7 +96,7 @@ impl H3Resolver {
         name: &str,
         endpoints: &[EndpointAddr],
     ) -> Result<(), Error> {
-        debug!("h3x Publishing {} with {} endpoints", name, endpoints.len());
+        debug!("h3x publishing {} with {} endpoints", name, endpoints.len());
         let bytes = {
             let endpoints = endpoints
                 .iter()
@@ -118,7 +118,7 @@ impl H3Resolver {
         let mut url = self.base_url.join("publish").expect("Invalid base URL");
         url.set_query(Some(&format!("host={name}")));
         let uri: http::Uri = url.as_str().parse().expect("URL should be valid URI");
-        tracing::debug!("h3x Publishing packet for {} to {}", name, self.base_url);
+        tracing::debug!("h3x publishing packet for {} to {}", name, self.base_url);
         let (_, resp) = self
             .client
             .new_request()
@@ -215,7 +215,7 @@ impl H3Resolver {
                     .filter_map(|answer| match answer.data() {
                         record::RData::E(ep) => {
                             let socket_ep = ep.clone().try_into().ok()?;
-                            info!(?socket_ep, "parsed endpoint from record");
+                            debug!(?socket_ep, "parsed endpoint from record");
                             Some(qresolve::EndpointAddr::Socket(socket_ep))
                         }
                         _ => {
