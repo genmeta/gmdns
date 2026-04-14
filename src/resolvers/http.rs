@@ -64,7 +64,7 @@ impl HttpResolver {
 
 #[derive(Debug, snafu::Snafu)]
 enum Error {
-    #[snafu(display("{source}"))]
+    #[snafu(display("HTTP request failed"))]
     Reqwest { source: reqwest::Error },
 
     #[snafu(display("{status}"))]

@@ -64,9 +64,9 @@ pub struct DnsErrors {
 impl fmt::Display for DnsErrors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.errors.is_empty() {
-            return write!(f, "No DNS resolvers available");
+            return write!(f, "no DNS resolvers available");
         }
-        writeln!(f, "All DNS resolvers failed")?;
+        writeln!(f, "all DNS resolvers failed")?;
         for (resolver, error) in self.errors.iter() {
             write!(f, "`{resolver}` failed: {}", Report::from_error(error))?;
         }
