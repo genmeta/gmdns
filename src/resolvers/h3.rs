@@ -3,12 +3,12 @@ use std::{fmt, io, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
 use h3x::dquic::{H3Client, prelude::ConnectServerError};
-use qresolve::{
+use h3x::dquic::qresolve::{
     EndpointAddr, Publish, PublishFuture, RecordStream, Resolve, ResolveFuture, Source,
 };
 use reqwest::IntoUrl;
 use tokio::time::Instant;
-use tracing::{debug, trace};
+use tracing::trace;
 use url::Url;
 
 use crate::{MdnsPacket, parser::packet::be_packet, wire::be_multi_response};
@@ -23,7 +23,7 @@ pub struct H3Resolver {
 
 #[derive(Debug)]
 struct Record {
-    addrs: Vec<qresolve::EndpointAddr>,
+    addrs: Vec<h3x::dquic::qresolve::EndpointAddr>,
     expire: Instant,
 }
 
@@ -101,8 +101,8 @@ impl H3Resolver {
             let endpoints = endpoints
                 .iter()
                 .filter_map(|ep| match *ep {
-                    qresolve::EndpointAddr::Socket(ep) => ep.try_into().ok(),
-                    qresolve::EndpointAddr::Ble(..) => None,
+                    h3x::dquic::qresolve::EndpointAddr::Socket(ep) => ep.try_into().ok(),
+                    h3x::dquic::qresolve::EndpointAddr::Ble(..) => None,
                 })
                 .collect();
             let mut hosts = std::collections::HashMap::new();
@@ -216,7 +216,7 @@ impl H3Resolver {
                         record::RData::E(ep) => {
                             let socket_ep = ep.clone().try_into().ok()?;
                             trace!(?socket_ep, "parsed endpoint from record");
-                            Some(qresolve::EndpointAddr::Socket(socket_ep))
+                            Some(h3x::dquic::qresolve::EndpointAddr::Socket(socket_ep))
                         }
                         _ => {
                             tracing::debug!(?answer, "ignored record");

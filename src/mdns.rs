@@ -10,7 +10,7 @@ use std::{
 use futures::{Stream, stream};
 #[cfg(feature = "h3x-resolver")]
 use h3x::dquic::qbase::net::addr::BoundAddr;
-use qinterface::{Interface, component::Component, io::IO};
+use h3x::dquic::qinterface::{Interface, component::Component, io::IO};
 use tokio::{task::JoinSet, time};
 use tracing::Instrument;
 

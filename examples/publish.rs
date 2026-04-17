@@ -8,7 +8,7 @@ use std::{
 use clap::Parser;
 use gmdns::{parser::record::endpoint::EndpointAddr, resolvers::H3Publisher};
 use h3x::dquic::H3Client;
-use qresolve::Publish;
+use h3x::dquic::qresolve::Publish;
 use rustls::{RootCertStore, SignatureScheme, pki_types::PrivateKeyDer, sign::SigningKey};
 use tracing::{Level, info};
 
