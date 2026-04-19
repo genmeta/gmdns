@@ -9,8 +9,10 @@ use futures::{
     FutureExt, Stream, StreamExt, TryFutureExt, future,
     stream::{self, FuturesUnordered},
 };
-use h3x::dquic::qinterface::{BindInterface, WeakInterface, bind_uri::BindUri, io::IO};
-use h3x::dquic::qresolve::{EndpointAddr, Family, RecordStream, ResolveFuture, SocketEndpointAddr, Source};
+use h3x::dquic::{
+    qinterface::{BindInterface, WeakInterface, bind_uri::BindUri, io::IO},
+    qresolve::{EndpointAddr, Family, RecordStream, ResolveFuture, SocketEndpointAddr, Source},
+};
 
 use super::{Publish, Resolve};
 pub use crate::mdns::Mdns as MdnsResolver;
@@ -35,7 +37,11 @@ impl fmt::Display for MdnsResolver {
 }
 
 impl Publish for MdnsResolver {
-    fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> h3x::dquic::qresolve::PublishFuture<'a> {
+    fn publish<'a>(
+        &'a self,
+        name: &'a str,
+        packet: &'a [u8],
+    ) -> h3x::dquic::qresolve::PublishFuture<'a> {
         use crate::parser::{packet::be_packet, record::RData};
         let endpoints = be_packet(packet)
             .map(|(_, pkt)| {

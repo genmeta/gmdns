@@ -8,6 +8,7 @@ use std::{
 
 use base64::Engine;
 use bytes::BufMut;
+use h3x::dquic::qresolve::SocketEndpointAddr;
 use nom::{
     IResult, Parser,
     bytes::streaming::take,
@@ -15,7 +16,6 @@ use nom::{
     error::{ErrorKind, make_error},
     number::streaming::{be_u8, be_u16, be_u32, be_u128},
 };
-use h3x::dquic::qresolve::SocketEndpointAddr;
 use rustls::{SignatureScheme, pki_types::SubjectPublicKeyInfoDer, sign::SigningKey};
 
 use crate::parser::{

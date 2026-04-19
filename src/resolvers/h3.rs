@@ -2,9 +2,15 @@ use std::{fmt, io, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
-use h3x::dquic::{H3Client, prelude::ConnectServerError};
-use h3x::dquic::qresolve::{
-    EndpointAddr, Publish, PublishFuture, RecordStream, Resolve, ResolveFuture, Source,
+use h3x::{
+    client::Client,
+    dquic::{
+        prelude::ConnectServerError,
+        qresolve::{
+            EndpointAddr, Publish, PublishFuture, RecordStream, Resolve, ResolveFuture, Source,
+        },
+    },
+    quic,
 };
 use reqwest::IntoUrl;
 use tokio::time::Instant;
@@ -14,8 +20,8 @@ use url::Url;
 use crate::{MdnsPacket, parser::packet::be_packet, wire::be_multi_response};
 
 // Inner struct that holds the actual H3 client and runs on a dedicated thread
-pub struct H3Resolver {
-    client: H3Client,
+pub struct H3Resolver<C: quic::Connect> {
+    client: Client<C>,
     base_url: Url,
     cached_records: DashMap<String, Record>,
     negative_cache: DashMap<String, Instant>,
@@ -27,7 +33,7 @@ struct Record {
     expire: Instant,
 }
 
-impl fmt::Debug for H3Resolver {
+impl<C: quic::Connect> fmt::Debug for H3Resolver<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("H3Resolver")
             .field("base_url", &self.base_url)
@@ -35,7 +41,7 @@ impl fmt::Debug for H3Resolver {
     }
 }
 
-impl fmt::Display for H3Resolver {
+impl<C: quic::Connect> fmt::Display for H3Resolver<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -46,14 +52,14 @@ impl fmt::Display for H3Resolver {
 }
 
 #[derive(Debug, snafu::Snafu)]
-pub enum Error {
+pub enum Error<E: std::error::Error + Send + Sync + 'static = ConnectServerError> {
     #[snafu(display("h3 stream error"))]
     H3Stream {
         source: h3x::client::MessageStreamError,
     },
     #[snafu(display("h3 request error"))]
     H3Request {
-        source: h3x::client::RequestError<ConnectServerError>,
+        source: h3x::client::RequestError<E>,
     },
 
     #[snafu(display("{status}"))]
@@ -71,8 +77,11 @@ pub enum Error {
     ParseMultiResponse,
 }
 
-impl H3Resolver {
-    pub fn new(base_url: impl IntoUrl, client: H3Client) -> io::Result<Self> {
+impl<C: quic::Connect> H3Resolver<C>
+where
+    C::Error: Send + Sync + 'static,
+{
+    pub fn new(base_url: impl IntoUrl, client: Client<C>) -> io::Result<Self> {
         let base_url = base_url
             .into_url()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -95,7 +104,7 @@ impl H3Resolver {
         &self,
         name: &str,
         endpoints: &[EndpointAddr],
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error<C::Error>> {
         trace!("h3x publishing {} with {} endpoints", name, endpoints.len());
         let bytes = {
             let endpoints = endpoints
@@ -114,7 +123,7 @@ impl H3Resolver {
     }
 
     /// Publish a pre-built DNS packet (with signatures already included).
-    pub async fn publish_packet(&self, name: &str, packet: &[u8]) -> Result<(), Error> {
+    pub async fn publish_packet(&self, name: &str, packet: &[u8]) -> Result<(), Error<C::Error>> {
         let mut url = self.base_url.join("publish").expect("Invalid base URL");
         url.set_query(Some(&format!("host={name}")));
         let uri: http::Uri = url.as_str().parse().expect("URL should be valid URI");
@@ -138,7 +147,7 @@ impl H3Resolver {
 
     pub const EXCLUDED_DOMAINS: [&str; 2] = ["dns.genmeta.net", "download.genmeta.net"];
 
-    pub async fn lookup(&self, name: &str) -> Result<RecordStream, Error> {
+    pub async fn lookup(&self, name: &str) -> Result<RecordStream, Error<C::Error>> {
         use crate::parser::record;
         let server = Arc::from(self.base_url.host_str().unwrap_or("<unknown server>"));
         let source = Source::Http { server };
@@ -246,9 +255,12 @@ impl H3Resolver {
     }
 }
 
-pub type H3Publisher = H3Resolver;
+pub type H3Publisher<C> = H3Resolver<C>;
 
-impl Publish for H3Publisher {
+impl<C: quic::Connect> Publish for H3Publisher<C>
+where
+    C::Error: Send + Sync + 'static,
+{
     fn publish<'a>(&'a self, name: &'a str, packet: &'a [u8]) -> PublishFuture<'a> {
         self.publish_packet(name, packet)
             .map_err(io::Error::other)
@@ -256,7 +268,10 @@ impl Publish for H3Publisher {
     }
 }
 
-impl Resolve for H3Resolver {
+impl<C: quic::Connect> Resolve for H3Resolver<C>
+where
+    C::Error: Send + Sync + 'static,
+{
     fn lookup<'l>(&'l self, name: &'l str) -> ResolveFuture<'l> {
         self.lookup(name).map_err(io::Error::other).boxed()
     }
