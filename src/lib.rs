@@ -1,3 +1,4 @@
+mod if_nametoindex;
 pub mod mdns;
 pub mod parser;
 mod protocol;

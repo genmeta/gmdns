@@ -9,14 +9,16 @@ use std::{
 
 use dashmap::DashMap;
 use futures::{Stream, StreamExt};
-use nix::net::if_::if_nametoindex;
 use snafu::Snafu;
 use socket2::{Domain, Socket, Type};
 use tokio::{io, net::UdpSocket, task::JoinSet, time};
 
-use crate::parser::{
-    packet::{Packet, be_packet},
-    record::endpoint::EndpointAddr,
+use crate::{
+    if_nametoindex::if_nametoindex,
+    parser::{
+        packet::{Packet, be_packet},
+        record::endpoint::EndpointAddr,
+    },
 };
 
 #[derive(Debug)]
